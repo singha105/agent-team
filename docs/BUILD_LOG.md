@@ -102,6 +102,23 @@ and referenced from the CLI as `--task 3`.
   built so container tests execute, migrations applied as their own step, and compose validation.
   `ANTHROPIC_API_KEY` is empty in CI by design: a test that needs a live key spends money on every
   push.
+- **Four more bugs, found in a post-phase audit and a fresh-clone test.**
+  - `list_files` raised an unhandled `FileNotFoundError` on a dangling symlink — only `resolve()`
+    was guarded, not `stat()`. Agents create broken symlinks routinely and `list_files` is the
+    first tool the system prompt tells them to call, so the very first tool call could fail.
+  - A model absent from `config/pricing.yaml` raised `UnknownModelError` out of `run()`, leaving
+    the task in `RUNNING` forever with no status and no reason. Since changing a model is meant to
+    be a one-line config edit, that is a realistic mistake. Now a pre-flight check that fails
+    before the first API call. A catch-all was added so no unforeseen error can strand a task
+    again; the traceback is logged rather than swallowed.
+  - `.env.example` shipped `AGENTTEAM_HOST_WORKSPACE_ROOT=` empty, which pydantic parsed as
+    `Path('.')` rather than `None`. The sandbox then bind-mounted the literal path `.`, so anyone
+    following the README's `cp .env.example .env` got a broken sandbox and three failing tests on a
+    clean checkout. Only a fresh clone surfaced this — the working copy had no `.env`.
+  - `test_container_cannot_read_host_home` read a hardcoded developer home path, so it passed
+    vacuously on Linux CI. It now plants a real canary; confirmed non-vacuous by checking the same
+    canary *is* readable with isolation off.
+
 - **A sixth bug, found while writing the compose file.** The sandbox's `--volume` source was built
   from the *process's* view of the workspace. Docker resolves that path on the host, so a
   containerised API would have mounted a non-existent path and agents would have appeared to write
