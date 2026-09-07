@@ -55,7 +55,13 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        # Foreign keys must be OFF for the duration of a migration on SQLite.
+        # batch_alter_table rebuilds a table by create-copy-drop-rename, and
+        # with enforcement on, DROP TABLE agents fails because tasks references
+        # it — the migration then dies partway with the schema half-changed.
+        # Integrity is re-checked below once the rebuild is finished; the
+        # application's own connections always run with foreign_keys=ON.
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
@@ -68,6 +74,16 @@ def run_migrations_online() -> None:
         # commit `upgrade head` appears to succeed while leaving the database
         # unstamped, and the next upgrade tries to recreate existing tables.
         connection.commit()
+
+        # Now that the rebuilds are done, prove the migration did not leave a
+        # dangling reference behind. Turning enforcement off for the rebuild is
+        # standard on SQLite; skipping this check afterwards is not.
+        violations = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        if violations:
+            raise RuntimeError(
+                f"migration left {len(violations)} foreign key violation(s): {violations[:5]}"
+            )
 
 
 if context.is_offline_mode():

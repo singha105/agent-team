@@ -79,3 +79,74 @@ def test_downgrade_then_upgrade_round_trips(fresh_db: Path) -> None:
     run_alembic("upgrade", "head", db_path=fresh_db)
     assert run_alembic("downgrade", "base", db_path=fresh_db).returncode == 0
     assert run_alembic("upgrade", "head", db_path=fresh_db).returncode == 0
+
+
+def test_round_trip_preserves_data_and_leaves_no_fk_violations(fresh_db: Path) -> None:
+    """batch_alter_table rebuilds tables by drop-and-rename, which fails on
+    SQLite when foreign key enforcement is on. That failure surfaced as a
+    downgrade that reported success while changing nothing, so this asserts on
+    exit codes and on the data, never on log text."""
+    import sqlite3
+
+    assert run_alembic("upgrade", "head", db_path=fresh_db).returncode == 0
+
+    conn = sqlite3.connect(fresh_db)
+    conn.execute(
+        "insert into agents (key,display_name,role,model,avatar_id,status) "
+        "values ('backend','Ada','r','claude-opus-5','a','idle')"
+    )
+    for status in ("queued", "in_progress", "needs_review", "done", "failed", "budget_exceeded"):
+        conn.execute(
+            "insert into tasks (title,description,assigned_agent_id,status,created_by,attempt) "
+            "values (?,?,1,?,'human',1)",
+            (status, status, status),
+        )
+    conn.commit()
+    conn.close()
+
+    down = run_alembic("downgrade", "e6b85cbd5658", db_path=fresh_db)
+    assert down.returncode == 0, down.stderr
+    up = run_alembic("upgrade", "head", db_path=fresh_db)
+    assert up.returncode == 0, up.stderr
+
+    conn = sqlite3.connect(fresh_db)
+    assert conn.execute("select count(*) from tasks").fetchone()[0] == 6
+    assert conn.execute("pragma foreign_key_check").fetchall() == []
+    statuses = {r[0] for r in conn.execute("select status from tasks")}
+    # Every surviving status must be one the state machine recognises.
+    assert statuses <= {"queued", "in_progress", "needs_review", "done", "failed",
+                        "budget_exceeded"}
+    conn.close()
+
+
+def test_phase1_status_values_are_migrated(fresh_db: Path) -> None:
+    """Status is a plain string column, so autogenerate sees no change. The
+    old values have to be rewritten explicitly or historical tasks keep a
+    status the state machine rejects."""
+    import sqlite3
+
+    run_alembic("upgrade", "e6b85cbd5658", db_path=fresh_db)
+    conn = sqlite3.connect(fresh_db)
+    conn.execute(
+        "insert into agents (key,display_name,role,model,avatar_id) "
+        "values ('backend','Ada','r','claude-opus-5','a')"
+    )
+    for old_status in ("pending", "running", "completed"):
+        conn.execute(
+            "insert into tasks (title,description,assigned_agent_id,status,created_by) "
+            "values (?,?,1,?,'human')",
+            (old_status, old_status, old_status),
+        )
+    conn.commit()
+    conn.close()
+
+    assert run_alembic("upgrade", "head", db_path=fresh_db).returncode == 0
+
+    conn = sqlite3.connect(fresh_db)
+    migrated = {r[0]: r[1] for r in conn.execute("select title, status from tasks")}
+    assert migrated == {
+        "pending": "queued",
+        "running": "in_progress",
+        "completed": "done",
+    }
+    conn.close()
