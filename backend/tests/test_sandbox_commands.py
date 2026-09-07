@@ -140,10 +140,25 @@ async def test_container_root_filesystem_is_read_only(settings, monkeypatch) -> 
 
 @requires_docker
 @pytest.mark.integration
-async def test_container_cannot_read_host_home(settings, monkeypatch) -> None:
+async def test_container_cannot_read_a_host_file_outside_the_workspace(
+    settings, monkeypatch, tmp_path: Path
+) -> None:
+    """Plant a real canary on the host and prove the container cannot read it.
+
+    Pointing at a path that happens not to exist on the runner (a developer's
+    ~/.zshrc, say) would pass vacuously on Linux CI — 'cat' fails either way.
+    The file has to genuinely exist outside the workspace for the assertion to
+    mean anything.
+    """
     monkeypatch.setattr(settings, "sandbox_mode", "docker")
-    result = await run_command("cat /Users/arnabsingh/.zshrc", settings=settings, timeout=30)
+    canary = tmp_path / "canary.txt"
+    canary.write_text("CANARY-MUST-NOT-LEAK")
+    assert canary.is_file()
+
+    result = await run_command(f"cat {canary}", settings=settings, timeout=30)
+
     assert result.exit_code != 0
+    assert "CANARY-MUST-NOT-LEAK" not in result.stdout
 
 
 @requires_docker
