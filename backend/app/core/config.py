@@ -38,7 +38,9 @@ class Settings(BaseSettings):
     # --- Paths -------------------------------------------------------------
     db_path: Path = Field(default=Path("data/agentteam.db"), alias="AGENTTEAM_DB_PATH")
     workspace_root: Path = Field(default=Path("workspace"), alias="AGENTTEAM_WORKSPACE_ROOT")
-    agent_config_dir: Path = Field(default=Path("config/agents"), alias="AGENTTEAM_AGENT_CONFIG_DIR")
+    agent_config_dir: Path = Field(
+        default=Path("config/agents"), alias="AGENTTEAM_AGENT_CONFIG_DIR"
+    )
     pricing_path: Path = Field(default=Path("config/pricing.yaml"), alias="AGENTTEAM_PRICING_PATH")
 
     # --- Sandbox -----------------------------------------------------------

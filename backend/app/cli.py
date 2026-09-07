@@ -1,8 +1,8 @@
 """Command line entry point.
 
-    python -m app.cli run --agent backend --task "..."
-    python -m app.cli show --task 1
-    python -m app.cli agents
+python -m app.cli run --agent backend --task "..."
+python -m app.cli show --task 1
+python -m app.cli agents
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from app.models import HUMAN, Message, Task, ToolCall, Usage
 
 
 def _rule(title: str = "") -> str:
-    return f"── {title} " .ljust(72, "─") if title else "─" * 72
+    return f"── {title} ".ljust(72, "─") if title else "─" * 72
 
 
 async def cmd_run(args: argparse.Namespace) -> int:
@@ -44,8 +44,10 @@ async def cmd_run(args: argparse.Namespace) -> int:
     print(f"model     {config.model}")
     print(f"role      {config.role}")
     print(f"sandbox   {settings.sandbox_mode}")
-    print(f"budgets   {config.max_iterations or settings.max_iterations} iterations, "
-          f"{config.max_tokens or settings.max_tokens_per_task:,} tokens")
+    print(
+        f"budgets   {config.max_iterations or settings.max_iterations} iterations, "
+        f"{config.max_tokens or settings.max_tokens_per_task:,} tokens"
+    )
     print(f"workspace {settings.workspace_dir}")
     print(_rule())
 
@@ -70,9 +72,11 @@ async def cmd_run(args: argparse.Namespace) -> int:
     if result.halt_reason:
         print(f"halted    {result.halt_reason}")
     b = result.budget
-    print(f"usage     {b['iterations']} iterations, {b['total_tokens']:,} tokens "
-          f"(in {b['input_tokens']:,} / out {b['output_tokens']:,}), "
-          f"est. ${b['estimated_cost_usd']:.4f}")
+    print(
+        f"usage     {b['iterations']} iterations, {b['total_tokens']:,} tokens "
+        f"(in {b['input_tokens']:,} / out {b['output_tokens']:,}), "
+        f"est. ${b['estimated_cost_usd']:.4f}"
+    )
     if result.final_text:
         print(_rule("agent summary"))
         print(result.final_text.strip())
@@ -92,20 +96,32 @@ async def cmd_show(args: argparse.Namespace) -> int:
             return 2
 
         messages = (
-            await session.execute(
-                select(Message).where(Message.task_id == task.id).order_by(Message.id)
+            (
+                await session.execute(
+                    select(Message).where(Message.task_id == task.id).order_by(Message.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         tool_calls = (
-            await session.execute(
-                select(ToolCall).where(ToolCall.task_id == task.id).order_by(ToolCall.id)
+            (
+                await session.execute(
+                    select(ToolCall).where(ToolCall.task_id == task.id).order_by(ToolCall.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         usage_rows = (
-            await session.execute(
-                select(Usage).where(Usage.task_id == task.id).order_by(Usage.id)
+            (
+                await session.execute(
+                    select(Usage).where(Usage.task_id == task.id).order_by(Usage.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         print(_rule(f"task {task.id}"))
         print(f"title     {task.title}")
@@ -132,10 +148,14 @@ async def cmd_show(args: argparse.Namespace) -> int:
         for u in usage_rows:
             total_cost += u.estimated_cost_usd
             total_tokens += u.input_tokens + u.output_tokens + u.cache_read_tokens
-            print(f"  it={u.iteration:<3} in {u.input_tokens:>7,}  out {u.output_tokens:>6,}  "
-                  f"cache_r {u.cache_read_tokens:>7,}  ${u.estimated_cost_usd:.4f}")
-        print(f"  {'total':<8} {total_tokens:,} tokens across {len(usage_rows)} calls, "
-              f"${total_cost:.4f}")
+            print(
+                f"  it={u.iteration:<3} in {u.input_tokens:>7,}  out {u.output_tokens:>6,}  "
+                f"cache_r {u.cache_read_tokens:>7,}  ${u.estimated_cost_usd:.4f}"
+            )
+        print(
+            f"  {'total':<8} {total_tokens:,} tokens across {len(usage_rows)} calls, "
+            f"${total_cost:.4f}"
+        )
         print(_rule())
     return 0
 

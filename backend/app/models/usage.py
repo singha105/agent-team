@@ -36,7 +36,7 @@ class Usage(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    task: Mapped["Task"] = relationship(back_populates="usage_records")  # noqa: F821
+    task: Mapped[Task] = relationship(back_populates="usage_records")  # noqa: F821
 
     def __repr__(self) -> str:
         return f"<Usage {self.id} {self.model} ${self.estimated_cost_usd:.4f}>"

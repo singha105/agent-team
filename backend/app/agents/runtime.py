@@ -61,8 +61,13 @@ def _serialize(blocks: Any) -> Any:
     """Convert SDK content blocks to JSON-safe structures for persistence."""
     if isinstance(blocks, list):
         return [_serialize(b) for b in blocks]
-    if hasattr(blocks, "model_dump"):
+    # Guard on the method actually called. SDK pydantic models expose both
+    # model_dump and model_dump_json; testing one and calling the other would
+    # break on any object that has only the former.
+    if hasattr(blocks, "model_dump_json"):
         return json.loads(blocks.model_dump_json())
+    if hasattr(blocks, "model_dump"):
+        return _serialize(blocks.model_dump())
     if isinstance(blocks, dict):
         return {k: _serialize(v) for k, v in blocks.items()}
     return blocks
@@ -150,32 +155,17 @@ class AgentRuntime:
 
     # -- tool execution ----------------------------------------------------
 
-    async def _execute_tool(self, task_id: int, block: Any) -> dict[str, Any]:
-        """Run one tool_use block and return its tool_result block.
-
-        The ToolCall row is written before the tool runs, so a command that
-        never returns is still visible in the trace.
-        """
+    async def _invoke_tool(self, block: Any) -> tuple[ToolOutcome, int]:
+        """Run one tool handler. Touches no session state, so a batch of these
+        is safe to run concurrently."""
         name = block.name
         # Inputs are already parsed dicts from the SDK; never string-match the
         # serialized form, which varies in escaping between models.
         arguments: dict[str, Any] = dict(block.input or {})
-
-        record = ToolCall(
-            task_id=task_id,
-            agent_key=self.config.key,
-            tool_name=name,
-            tool_use_id=block.id,
-            arguments=arguments,
-        )
-        self.session.add(record)
-        await self.session.flush()
-
-        started = time.perf_counter()
         tool: Tool | None = self.tools.get(name)
+        started = time.perf_counter()
 
         if tool is None:
-            # The model asked for a tool this agent was not granted.
             outcome = ToolOutcome(
                 content=(
                     f"Tool {name!r} is not available to you. "
@@ -201,18 +191,47 @@ class AgentRuntime:
                     is_error=True,
                 )
 
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        record.result = outcome.payload
-        record.duration_ms = duration_ms
-        record.error = outcome.content if outcome.is_error else None
+        return outcome, int((time.perf_counter() - started) * 1000)
+
+    async def _run_tool_batch(self, task_id: int, blocks: list[Any]) -> list[dict[str, Any]]:
+        """Execute one turn's tool calls and return their tool_result blocks.
+
+        Three phases, because an AsyncSession is not concurrency-safe: rows are
+        written before execution (spec section 3), the handlers then run
+        concurrently with no session access, and results are written back
+        sequentially afterwards. Interleaving session.add()/flush() across
+        gathered coroutines corrupts the unit of work.
+        """
+        records: list[ToolCall] = []
+        for block in blocks:
+            record = ToolCall(
+                task_id=task_id,
+                agent_key=self.config.key,
+                tool_name=block.name,
+                tool_use_id=block.id,
+                arguments=dict(block.input or {}),
+            )
+            self.session.add(record)
+            records.append(record)
         await self.session.flush()
 
-        return {
-            "type": "tool_result",
-            "tool_use_id": block.id,
-            "content": outcome.content,
-            "is_error": outcome.is_error,
-        }
+        outcomes = await asyncio.gather(*(self._invoke_tool(b) for b in blocks))
+
+        results: list[dict[str, Any]] = []
+        for block, record, (outcome, duration_ms) in zip(blocks, records, outcomes, strict=True):
+            record.result = outcome.payload
+            record.duration_ms = duration_ms
+            record.error = outcome.content if outcome.is_error else None
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": outcome.content,
+                    "is_error": outcome.is_error,
+                }
+            )
+        await self.session.flush()
+        return results
 
     # -- API call ----------------------------------------------------------
 
@@ -275,8 +294,11 @@ class AgentRuntime:
 
                 log.info(
                     "[%s] iteration %d/%d (%d tokens, $%.4f so far)",
-                    self.config.key, iteration, self.budget.max_iterations,
-                    self.budget.total_tokens, self.budget.cost_usd,
+                    self.config.key,
+                    iteration,
+                    self.budget.max_iterations,
+                    self.budget.total_tokens,
+                    self.budget.cost_usd,
                 )
 
                 response = await self._call_api(messages, system)
@@ -287,8 +309,13 @@ class AgentRuntime:
                 await self._persist_usage(task.id, usage, cost, iteration)
 
                 await self._persist_message(
-                    task.id, "assistant", response.content,
-                    MessageType.ASSISTANT, self.config.key, None, iteration,
+                    task.id,
+                    "assistant",
+                    response.content,
+                    MessageType.ASSISTANT,
+                    self.config.key,
+                    None,
+                    iteration,
                 )
 
                 text = "".join(b.text for b in response.content if b.type == "text")
@@ -338,20 +365,28 @@ class AgentRuntime:
                 messages.append({"role": "assistant", "content": response.content})
 
                 await self._persist_message(
-                    task.id, "assistant", [_serialize(b) for b in tool_uses],
-                    MessageType.TOOL_USE, self.config.key, None, iteration,
+                    task.id,
+                    "assistant",
+                    [_serialize(b) for b in tool_uses],
+                    MessageType.TOOL_USE,
+                    self.config.key,
+                    None,
+                    iteration,
                 )
 
                 # Parallel tool calls run concurrently and every result goes
                 # back in ONE user message; splitting them teaches the model to
                 # stop calling tools in parallel.
-                results = await asyncio.gather(
-                    *(self._execute_tool(task.id, b) for b in tool_uses)
-                )
+                results = await self._run_tool_batch(task.id, tool_uses)
 
                 await self._persist_message(
-                    task.id, "user", results, MessageType.TOOL_RESULT,
-                    None, self.config.key, iteration,
+                    task.id,
+                    "user",
+                    results,
+                    MessageType.TOOL_RESULT,
+                    None,
+                    self.config.key,
+                    iteration,
                 )
                 messages.append({"role": "user", "content": results})
 

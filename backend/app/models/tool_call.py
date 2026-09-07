@@ -35,7 +35,7 @@ class ToolCall(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    task: Mapped["Task"] = relationship(back_populates="tool_calls")  # noqa: F821
+    task: Mapped[Task] = relationship(back_populates="tool_calls")  # noqa: F821
 
     def __repr__(self) -> str:
         return f"<ToolCall {self.id} {self.tool_name} err={bool(self.error)}>"

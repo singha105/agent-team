@@ -68,7 +68,8 @@ class AgentConfig(BaseModel):
     @field_validator("effort")
     @classmethod
     def _effort_is_valid(cls, v: str | None) -> str | None:
-        allowed = {"low", "medium", "high", "xhigh", "max"}
+        # 'off' omits output_config entirely, for models that reject it.
+        allowed = {"low", "medium", "high", "xhigh", "max", "off"}
         if v is not None and v not in allowed:
             raise ValueError(f"effort must be one of {sorted(allowed)}, got {v!r}")
         return v

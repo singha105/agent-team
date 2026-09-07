@@ -17,9 +17,7 @@ async def read_file(path: str) -> ToolOutcome:
         return ToolOutcome(content=f"Denied: {exc}", payload={"path": path}, is_error=True)
 
     if not target.exists():
-        return ToolOutcome(
-            content=f"No such file: {path}", payload={"path": path}, is_error=True
-        )
+        return ToolOutcome(content=f"No such file: {path}", payload={"path": path}, is_error=True)
     if target.is_dir():
         return ToolOutcome(
             content=f"{path} is a directory, not a file. Use list_files.",

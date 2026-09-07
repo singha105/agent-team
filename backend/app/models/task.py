@@ -41,22 +41,23 @@ class Task(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    assigned_agent: Mapped["Agent"] = relationship(  # noqa: F821
+    assigned_agent: Mapped[Agent] = relationship(  # noqa: F821
         back_populates="tasks", foreign_keys=[assigned_agent_id]
     )
-    subtasks: Mapped[list["Task"]] = relationship(
-        back_populates="parent", remote_side=lambda: [Task.id], viewonly=True
-    )
-    parent: Mapped["Task | None"] = relationship(
+    # Adjacency list: remote_side belongs on the many-to-one side only.
+    parent: Mapped[Task | None] = relationship(
         back_populates="subtasks", remote_side=[id], foreign_keys=[parent_task_id]
     )
-    messages: Mapped[list["Message"]] = relationship(  # noqa: F821
+    subtasks: Mapped[list[Task]] = relationship(
+        back_populates="parent", foreign_keys=[parent_task_id]
+    )
+    messages: Mapped[list[Message]] = relationship(  # noqa: F821
         back_populates="task", cascade="all, delete-orphan", order_by="Message.id"
     )
-    tool_calls: Mapped[list["ToolCall"]] = relationship(  # noqa: F821
+    tool_calls: Mapped[list[ToolCall]] = relationship(  # noqa: F821
         back_populates="task", cascade="all, delete-orphan", order_by="ToolCall.id"
     )
-    usage_records: Mapped[list["Usage"]] = relationship(  # noqa: F821
+    usage_records: Mapped[list[Usage]] = relationship(  # noqa: F821
         back_populates="task", cascade="all, delete-orphan", order_by="Usage.id"
     )
 

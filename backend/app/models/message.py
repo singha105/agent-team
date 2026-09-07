@@ -35,7 +35,7 @@ class Message(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    task: Mapped["Task"] = relationship(back_populates="messages")  # noqa: F821
+    task: Mapped[Task] = relationship(back_populates="messages")  # noqa: F821
 
     def __repr__(self) -> str:
         return f"<Message {self.id} task={self.task_id} {self.message_type}>"

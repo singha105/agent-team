@@ -29,7 +29,7 @@ class Agent(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    tasks: Mapped[list["Task"]] = relationship(  # noqa: F821
+    tasks: Mapped[list[Task]] = relationship(  # noqa: F821
         back_populates="assigned_agent", foreign_keys="Task.assigned_agent_id"
     )
 

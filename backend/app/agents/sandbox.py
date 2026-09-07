@@ -1,5 +1,10 @@
 """Sandboxed filesystem and command execution.
 
+Two ruff rules are suppressed inline below with reasons: ASYNC109 (the timeout
+parameter cannot be replaced by asyncio.timeout, which would cancel the await
+while leaving the process or container running) and S108 (the /tmp reference is
+a tmpfs mount target inside the container, not a host path).
+
 The boundary is enforced by the runtime, never by the system prompt. Two
 mechanisms, layered:
 
@@ -169,8 +174,7 @@ def parse_command(command: str) -> list[str]:
         )
     if executable not in ALLOWED_EXECUTABLES:
         raise SandboxViolation(
-            f"executable {executable!r} is not allowed. "
-            f"Allowed: {sorted(ALLOWED_EXECUTABLES)}"
+            f"executable {executable!r} is not allowed. " f"Allowed: {sorted(ALLOWED_EXECUTABLES)}"
         )
     return argv
 
@@ -193,7 +197,7 @@ def _truncate(raw: bytes, limit: int) -> tuple[str, bool]:
 
 
 async def _run_subprocess(
-    argv: list[str], cwd: Path, timeout: int, settings: Settings
+    argv: list[str], cwd: Path, timeout: int, settings: Settings  # noqa: ASYNC109
 ) -> tuple[int, bytes, bytes, bool]:
     """Run on the host. start_new_session makes the child a process-group
     leader so the whole tree can be killed on timeout, not just the parent."""
@@ -203,14 +207,29 @@ async def _run_subprocess(
         "LANG": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-        start_new_session=True,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        # The executable is allow-listed but not installed on this host. 127 is
+        # the conventional "command not found" code; returning it as a result
+        # rather than raising lets the agent read the message and adapt.
+        return (
+            127,
+            b"",
+            (
+                f"{argv[0]}: command not found on this host. Sandbox mode is "
+                f"'subprocess', so only executables installed on the host are "
+                f"available."
+            ).encode(),
+            False,
+        )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return proc.returncode or 0, stdout, stderr, False
@@ -234,29 +253,43 @@ def build_docker_argv(
     """
     workdir = CONTAINER_WORKDIR if rel_cwd == "." else f"{CONTAINER_WORKDIR}/{rel_cwd}"
     docker_argv = [
-        "docker", "run",
+        "docker",
+        "run",
         "--rm",
-        "--name", container_name,
-        "--network", "bridge" if settings.sandbox_network else "none",
+        "--name",
+        container_name,
+        "--network",
+        "bridge" if settings.sandbox_network else "none",
         "--read-only",
-        "--user", f"{os.getuid()}:{os.getgid()}",
-        "--memory", settings.sandbox_memory,
-        "--memory-swap", settings.sandbox_memory,
-        "--pids-limit", str(settings.sandbox_pids_limit),
-        "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges",
-        "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-        "--volume", f"{workspace_root(settings)}:{CONTAINER_WORKDIR}:rw",
-        "--workdir", workdir,
-        "--env", "HOME=/tmp",
-        "--env", "PYTHONDONTWRITEBYTECODE=1",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "--memory",
+        settings.sandbox_memory,
+        "--memory-swap",
+        settings.sandbox_memory,
+        "--pids-limit",
+        str(settings.sandbox_pids_limit),
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",  # noqa: S108 - in-container mount target
+        "--volume",
+        f"{workspace_root(settings)}:{CONTAINER_WORKDIR}:rw",
+        "--workdir",
+        workdir,
+        "--env",
+        "HOME=/tmp",
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
         settings.sandbox_image,
     ]
     return docker_argv + argv
 
 
 async def _run_docker(
-    argv: list[str], rel_cwd: str, timeout: int, settings: Settings
+    argv: list[str], rel_cwd: str, timeout: int, settings: Settings  # noqa: ASYNC109
 ) -> tuple[int, bytes, bytes, bool]:
     """Run inside a disposable container."""
     container_name = f"agentteam-{uuid.uuid4().hex[:12]}"
@@ -275,7 +308,9 @@ async def _run_docker(
         # Kill the container, not just the local `docker run` client — killing
         # the client alone would leave the workload running in the daemon.
         killer = await asyncio.create_subprocess_exec(
-            "docker", "kill", container_name,
+            "docker",
+            "kill",
+            container_name,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -299,7 +334,7 @@ async def run_command(
     command: str,
     cwd: str = ".",
     settings: Settings | None = None,
-    timeout: int | None = None,
+    timeout: int | None = None,  # noqa: ASYNC109
 ) -> CommandResult:
     """Execute one command in the sandbox.
 
@@ -329,7 +364,10 @@ async def run_command(
 
     log.info(
         "command %s exit=%s %sms mode=%s%s",
-        shlex.join(argv), code, duration_ms, s.sandbox_mode,
+        shlex.join(argv),
+        code,
+        duration_ms,
+        s.sandbox_mode,
         " (timed out)" if timed_out else "",
     )
     return CommandResult(
