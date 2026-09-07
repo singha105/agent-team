@@ -394,3 +394,43 @@ async def test_conversation_history_grows_across_iterations(session, agent, sett
 
     lengths = [len(c["messages"]) for c in client.calls]
     assert lengths == [1, 3, 5], "each turn appends the assistant turn and its tool results"
+
+
+async def test_unpriced_model_fails_before_any_api_call(session, agent_config_dir, settings):
+    """Changing a model is a one-line config edit, so a model with no pricing
+    entry is a realistic mistake. It must fail cleanly and before spending."""
+    (agent_config_dir / "backend.yaml").write_text(
+        yaml.safe_dump(AGENT_YAML | {"model": "claude-not-in-pricing-table"}), encoding="utf-8"
+    )
+    agent = load_agent_config("backend", agent_config_dir)
+    client = FakeClient([FakeResponse([text_block("done")], "end_turn")])
+    task = await make_task(session, agent)
+
+    result = await AgentRuntime(agent, session, settings, client).run(task)
+
+    assert result.status == TaskStatus.FAILED
+    assert "pricing.yaml" in result.halt_reason
+    assert client.call_count == 0, "must not spend before discovering it cannot cost the run"
+
+
+async def test_unexpected_exception_never_strands_a_task_in_running(
+    session, agent, settings, monkeypatch
+) -> None:
+    """A task left in RUNNING has no status and no reason — the trace just
+    stops. Any unforeseen error must still close it out."""
+    client = FakeClient([FakeResponse([text_block("done")], "end_turn")])
+    runtime = AgentRuntime(agent, session, settings, client)
+
+    def boom(*_a, **_kw):
+        raise ValueError("something nobody predicted")
+
+    monkeypatch.setattr(runtime, "_persist_usage", boom)
+    task = await make_task(session, agent)
+
+    result = await runtime.run(task)
+
+    assert result.status == TaskStatus.FAILED
+    assert "ValueError" in result.halt_reason
+    refreshed = (await session.execute(select(Task).where(Task.id == task.id))).scalar_one()
+    assert refreshed.status == TaskStatus.FAILED
+    assert refreshed.status != TaskStatus.RUNNING

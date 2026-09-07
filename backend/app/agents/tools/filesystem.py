@@ -97,13 +97,20 @@ async def list_files(path: str = ".") -> ToolOutcome:
         if len(entries) >= MAX_LISTING_ENTRIES:
             truncated = True
             break
-        # A symlink pointing outside is listed as such but never followed.
+        # The whole per-entry block is guarded, not just resolve(): a broken
+        # symlink or a file deleted between rglob() and stat() raises OSError
+        # here, and one bad entry must not take down the whole listing.
         try:
             rel = to_workspace_relative(item.resolve(), settings)
+            entries.append(f"{rel}/" if item.is_dir() else f"{rel}  ({item.stat().st_size}b)")
         except (ValueError, OSError):
-            entries.append(f"{item.name}  [symlink outside workspace — not accessible]")
-            continue
-        entries.append(f"{rel}/" if item.is_dir() else f"{rel}  ({item.stat().st_size}b)")
+            # A symlink pointing outside the workspace, or a dangling one.
+            label = (
+                "broken symlink"
+                if item.is_symlink() and not item.exists()
+                else "not accessible from the workspace"
+            )
+            entries.append(f"{item.name}  [{label}]")
 
     if not entries:
         return ToolOutcome(content=f"{path} is empty.", payload={"path": path, "count": 0})

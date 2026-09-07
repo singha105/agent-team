@@ -167,3 +167,39 @@ async def test_run_command_failure_is_not_an_error_outcome(settings) -> None:
     assert not outcome.is_error
     assert "exit code:" in outcome.content
     assert outcome.payload["exit_code"] != 0
+
+
+async def test_list_files_survives_a_broken_symlink(settings, workspace: Path) -> None:
+    """Agents create dangling symlinks routinely — a git checkout, a partial
+    write. list_files is the first tool the system prompt tells them to call,
+    so one bad entry must not take down the whole listing."""
+    os.symlink(workspace / "nonexistent_target", workspace / "dangling")
+    (workspace / "real.py").write_text("x = 1")
+
+    outcome = await list_files(".")
+
+    assert not outcome.is_error
+    assert "real.py" in outcome.content
+    assert "broken symlink" in outcome.content
+
+
+async def test_list_files_survives_a_file_deleted_mid_listing(
+    settings, workspace: Path, monkeypatch
+) -> None:
+    """A file removed between rglob() and stat() must not crash the listing."""
+    (workspace / "vanishing.py").write_text("x")
+    (workspace / "stable.py").write_text("y")
+
+    real_stat = Path.stat
+
+    def flaky_stat(self, *args, **kwargs):
+        if self.name == "vanishing.py":
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+
+    outcome = await list_files(".")
+
+    assert not outcome.is_error
+    assert "stable.py" in outcome.content

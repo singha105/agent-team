@@ -34,6 +34,7 @@ import os
 import shlex
 import signal
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -197,7 +198,7 @@ def _truncate(raw: bytes, limit: int) -> tuple[str, bool]:
 
 
 async def _run_subprocess(
-    argv: list[str], cwd: Path, timeout: int, settings: Settings  # noqa: ASYNC109
+    argv: list[str], cwd: Path, timeout: int  # noqa: ASYNC109
 ) -> tuple[int, bytes, bytes, bool]:
     """Run on the host. start_new_session makes the child a process-group
     leader so the whole tree can be killed on timeout, not just the parent."""
@@ -238,7 +239,7 @@ async def _run_subprocess(
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):  # pragma: no cover - race
             pass
-        with __import__("contextlib").suppress(Exception):
+        with suppress(Exception):
             await asyncio.wait_for(proc.wait(), timeout=5)
         return 124, b"", f"command exceeded the {timeout}s timeout and was killed".encode(), True
 
@@ -314,13 +315,13 @@ async def _run_docker(
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        with __import__("contextlib").suppress(Exception):
+        with suppress(Exception):
             await asyncio.wait_for(killer.wait(), timeout=10)
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):  # pragma: no cover - race
             pass
-        with __import__("contextlib").suppress(Exception):
+        with suppress(Exception):
             await asyncio.wait_for(proc.wait(), timeout=5)
         return (
             124,
@@ -356,7 +357,7 @@ async def run_command(
     if s.sandbox_mode == "docker":
         code, out, err, timed_out = await _run_docker(argv, rel_cwd, limit, s)
     else:
-        code, out, err, timed_out = await _run_subprocess(argv, resolved_cwd, limit, s)
+        code, out, err, timed_out = await _run_subprocess(argv, resolved_cwd, limit)
     duration_ms = int((asyncio.get_running_loop().time() - started) * 1000)
 
     stdout, t1 = _truncate(out, s.max_output_bytes)

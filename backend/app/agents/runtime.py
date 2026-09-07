@@ -27,7 +27,7 @@ from app.agents.tools import build_toolset
 from app.agents.tools.base import Tool, ToolOutcome
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
-from app.core.pricing import TokenUsage, estimate_cost_usd
+from app.core.pricing import TokenUsage, UnknownModelError, estimate_cost_usd, rates_for
 from app.models import Agent, Message, MessageType, Task, TaskStatus, ToolCall, Usage
 
 log = get_logger(__name__)
@@ -279,6 +279,16 @@ class AgentRuntime:
         system = self.config.resolve_system_prompt(self.settings.agent_configs)
         messages: list[dict[str, Any]] = [{"role": "user", "content": task.description}]
 
+        # Pre-flight: a model with no rate entry cannot be costed, and finding
+        # that out mid-loop would strand the task after real spend. Check it
+        # before the first API call.
+        try:
+            rates_for(self.config.model)
+        except UnknownModelError as exc:
+            reason = str(exc).strip('"')
+            await self._set_status(task, TaskStatus.FAILED, reason)
+            return self._result(task, TaskStatus.FAILED, "", reason)
+
         await self._set_status(task, TaskStatus.RUNNING)
         await self._persist_message(
             task.id, "user", task.description, MessageType.USER, None, self.config.key, 0
@@ -398,6 +408,15 @@ class AgentRuntime:
             log.error("[%s] %s", self.config.key, exc)
             await self._set_status(task, TaskStatus.FAILED, str(exc))
             return self._result(task, TaskStatus.FAILED, final_text, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            # Anything unforeseen still has to close the task out. Leaving it
+            # in RUNNING strands it: no status, no reason, and the trace stops
+            # mid-run with nothing saying why. The traceback is logged in full
+            # rather than swallowed, so the underlying bug stays visible.
+            log.exception("[%s] unexpected failure", self.config.key)
+            reason = f"unexpected {type(exc).__name__}: {exc}"
+            await self._set_status(task, TaskStatus.FAILED, reason)
+            return self._result(task, TaskStatus.FAILED, final_text, reason)
 
     def _result(self, task: Task, status: str, text: str, reason: str | None) -> RunResult:
         return RunResult(
