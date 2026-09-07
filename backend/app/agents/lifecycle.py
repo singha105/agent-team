@@ -53,11 +53,22 @@ class IllegalTransitionError(ValueError):
     def __init__(self, current: str, requested: str) -> None:
         self.current = current
         self.requested = requested
-        allowed = sorted(ALLOWED_TRANSITIONS.get(TaskStatus(current), frozenset()))
+
+        # Building the message must not itself raise. A status can arrive from a
+        # database row written by an older version of the code, and a bare
+        # ValueError from the enum lookup would hide which transition was
+        # attempted — exactly the information needed to debug it.
+        try:
+            allowed = sorted(ALLOWED_TRANSITIONS[TaskStatus(current)])
+            targets = [str(s) for s in allowed] or "(none — terminal state)"
+        except (KeyError, ValueError):
+            targets = (
+                f"(unknown status {current!r}; expected one of {[str(s) for s in TaskStatus]})"
+            )
+
         super().__init__(
             f"illegal task transition {current!r} → {requested!r}. "
-            f"From {current!r} the only legal targets are "
-            f"{[str(s) for s in allowed] or '(none — terminal state)'}."
+            f"From {current!r} the only legal targets are {targets}."
         )
 
 

@@ -88,3 +88,36 @@ def docker_available() -> bool:
 
 
 requires_docker = pytest.mark.skipif(not docker_available(), reason="needs a running Docker daemon")
+
+
+# --------------------------------------------------------------------------
+# Phase 2: API, worker and event-stream fixtures
+# --------------------------------------------------------------------------
+
+REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "agents"
+
+
+@pytest.fixture
+def api_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Settings that point at the *real* agent configs.
+
+    The API tests are more useful exercising the four agents that actually
+    ship than a synthetic roster — a typo in devops.yaml should fail a test.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "data").mkdir()
+
+    monkeypatch.setenv("AGENTTEAM_WORKSPACE_ROOT", str(workspace))
+    monkeypatch.setenv("AGENTTEAM_DB_PATH", str(tmp_path / "data" / "api.db"))
+    monkeypatch.setenv("AGENTTEAM_AGENT_CONFIG_DIR", str(REAL_AGENT_CONFIGS))
+    monkeypatch.setenv("AGENTTEAM_SANDBOX_MODE", "subprocess")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    _reset_caches()
+    from app.agents import config_loader
+
+    config_loader._cached.cache_clear()
+    yield config_module.get_settings()
+    config_loader._cached.cache_clear()
+    _reset_caches()

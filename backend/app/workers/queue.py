@@ -16,6 +16,7 @@ concurrency-safe.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -42,9 +43,17 @@ class QueuedTask:
 class TaskWorkerPool:
     """Runs queued tasks in the background, one lane per agent."""
 
-    def __init__(self, settings: Settings | None = None, bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        bus: EventBus | None = None,
+        client_factory: Callable[[str], object] | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
         self.bus = bus or get_event_bus()
+        # Test seam. In production this stays None and AgentRuntime builds a
+        # real AsyncAnthropic client from the configured key.
+        self.client_factory = client_factory
         self._queues: dict[str, asyncio.Queue[QueuedTask | None]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
         self._running = False
@@ -149,7 +158,8 @@ class TaskWorkerPool:
                 task.halt_reason = str(exc)
                 return
 
-            runtime = AgentRuntime(config, session, self.settings, bus=self.bus)
+            client = self.client_factory(item.agent_key) if self.client_factory else None
+            runtime = AgentRuntime(config, session, self.settings, client=client, bus=self.bus)
             result = await runtime.run(task)
             log.info(
                 "task %s finished as %s (%s)",

@@ -186,6 +186,22 @@ class AgentRuntime:
             )
         return conversation
 
+    async def _checkpoint(self) -> None:
+        """Commit the work so far.
+
+        Two reasons this is a commit and not a flush. SQLite allows a single
+        writer, so holding one transaction open for an entire agent run blocks
+        every other agent — the worker pool's concurrency is fictional without
+        this. And a trace that only becomes visible after the run finishes is
+        useless for watching a run in progress, which is the point of the
+        product.
+
+        Committing as we go also means a crash leaves the trace of what
+        happened rather than rolling it away, which is what you want from an
+        audit trail.
+        """
+        await self.session.commit()
+
     async def _emit(self, event) -> None:
         if self.bus is not None:
             await self.bus.publish(event)
@@ -238,10 +254,12 @@ class AgentRuntime:
         )
         self.session.add(row)
         await self.session.flush()
+        message_id = row.id
+        await self._checkpoint()
         await self._emit(
             MessageCreated(
                 task_id=task_id,
-                message_id=row.id,
+                message_id=message_id,
                 message_type=message_type,
                 role=role,
                 from_agent=from_agent,
@@ -265,7 +283,7 @@ class AgentRuntime:
                 iteration=it,
             )
         )
-        await self.session.flush()
+        await self._checkpoint()
         await self._emit(
             UsageUpdated(
                 task_id=task_id,
@@ -287,7 +305,7 @@ class AgentRuntime:
         previous, task.status = task.status, status
         if halt_reason is not None:
             task.halt_reason = halt_reason
-        await self.session.flush()
+        await self._checkpoint()
         await self._emit(
             TaskStatusChanged(
                 task_id=task.id,
@@ -359,7 +377,10 @@ class AgentRuntime:
             )
             self.session.add(record)
             records.append(record)
-        await self.session.flush()
+        # Committed before the tools run, not merely flushed: spec section 3
+        # requires the row to exist before execution, and an uncommitted row
+        # would vanish if the process died mid-command.
+        await self._checkpoint()
 
         for block, record in zip(blocks, records, strict=True):
             await self._emit(
@@ -398,7 +419,7 @@ class AgentRuntime:
                     error=outcome.content if outcome.is_error else None,
                 )
             )
-        await self.session.flush()
+        await self._checkpoint()
         return results
 
     # -- API call ----------------------------------------------------------
