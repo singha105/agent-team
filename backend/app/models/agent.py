@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, func
+from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 from app.models.enums import AgentStatus
+from app.models.timestamps import utcnow
 
 
 class Agent(Base):
@@ -36,7 +37,7 @@ class Agent(Base):
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), default=utcnow, nullable=False
     )
 
     tasks: Mapped[list[Task]] = relationship(  # noqa: F821

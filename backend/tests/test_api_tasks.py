@@ -209,3 +209,35 @@ async def test_agent_status_reflects_a_finished_run(api) -> None:
     assert roster["backend"]["status"] == "waiting_on_human"
     # An agent that has never been dispatched to stays idle.
     assert roster["devops"]["status"] == "idle"
+
+
+async def test_trace_orders_causally_across_kinds(api) -> None:
+    """The first thing in a run is the human's instruction, and a tool call
+    cannot precede the assistant turn that requested it.
+
+    This is the check that whole-second timestamps broke: ids are independent
+    per-table sequences, so with tied timestamps a tool_call with id 1 sorted
+    ahead of the message with id 3 that caused it.
+    """
+    api.pool.client_factory = writes_then_finishes()
+    created = (
+        await api.post("/api/tasks", json={"agent_key": "backend", "description": "go"})
+    ).json()
+    assert await api.pool.wait_until_idle(timeout=10)
+
+    entries = (await api.get(f"/api/tasks/{created['id']}/trace")).json()["entries"]
+
+    assert entries[0]["kind"] == "message"
+    assert "human → backend" in entries[0]["summary"]
+
+    kinds = [e["kind"] for e in entries]
+    first_tool_call = kinds.index("tool_call")
+    tool_use_message = next(
+        i for i, e in enumerate(entries) if e["detail"].get("message_type") == "tool_use"
+    )
+    assert (
+        tool_use_message < first_tool_call
+    ), "a tool call appeared before the assistant turn that requested it"
+
+    # Timestamps must actually distinguish the steps, not all tie.
+    assert len({e["at"] for e in entries}) > 1, "all trace timestamps are identical"

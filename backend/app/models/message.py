@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
+from app.models.timestamps import utcnow
 
 
 class Message(Base):
@@ -32,7 +33,7 @@ class Message(Base):
     # Loop iteration this message belongs to; lets the trace viewer group turns.
     iteration: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), default=utcnow, nullable=False
     )
 
     task: Mapped[Task] = relationship(back_populates="messages")  # noqa: F821

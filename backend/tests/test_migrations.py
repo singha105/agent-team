@@ -156,3 +156,30 @@ def test_phase1_status_values_are_migrated(fresh_db: Path) -> None:
         "completed": "done",
     }
     conn.close()
+
+
+def test_timestamps_have_sub_second_precision(fresh_db: Path) -> None:
+    """The trace endpoint orders messages, tool calls and usage rows against
+    each other. Their ids are independent per-table sequences, so ordering can
+    only come from the timestamp — and SQLite's CURRENT_TIMESTAMP has
+    whole-second resolution, which makes every row in one iteration a tie."""
+    import sqlite3
+
+    run_alembic("upgrade", "head", db_path=fresh_db)
+
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "backend"))
+    from app.models.timestamps import utcnow
+
+    conn = sqlite3.connect(fresh_db)
+    conn.execute(
+        "insert into agents (key,display_name,role,model,avatar_id,status,created_at) "
+        "values ('backend','Ada','r','claude-opus-5','a','idle',?)",
+        (utcnow().isoformat(),),
+    )
+    conn.commit()
+    stored = conn.execute("select created_at from agents").fetchone()[0]
+    conn.close()
+
+    assert "." in str(stored), f"timestamp has no sub-second component: {stored!r}"
