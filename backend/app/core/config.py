@@ -42,6 +42,12 @@ class Settings(BaseSettings):
         default=Path("config/agents"), alias="AGENTTEAM_AGENT_CONFIG_DIR"
     )
     pricing_path: Path = Field(default=Path("config/pricing.yaml"), alias="AGENTTEAM_PRICING_PATH")
+    # Only set when AgentTeam itself runs inside a container. The sandbox's
+    # --volume flag is interpreted by the *host* Docker daemon, so it must name
+    # a path on the host, not the path this process sees. Without it a
+    # containerised API mounts the wrong directory and agents appear to write
+    # files that never reach the real workspace.
+    host_workspace_root: Path | None = Field(default=None, alias="AGENTTEAM_HOST_WORKSPACE_ROOT")
 
     # --- Sandbox -----------------------------------------------------------
     sandbox_mode: str = Field(default="docker", alias="AGENTTEAM_SANDBOX_MODE")
@@ -98,6 +104,13 @@ class Settings(BaseSettings):
     @property
     def pricing_file(self) -> Path:
         return self._resolve(self.pricing_path)
+
+    @property
+    def sandbox_mount_source(self) -> Path:
+        """The path the host daemon should bind-mount as the workspace."""
+        if self.host_workspace_root is not None:
+            return self.host_workspace_root
+        return self.workspace_dir.resolve()
 
     @property
     def database_url(self) -> str:

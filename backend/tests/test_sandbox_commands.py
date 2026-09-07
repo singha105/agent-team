@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.agents.sandbox import (
@@ -179,3 +181,16 @@ async def test_missing_host_executable_returns_127_not_an_exception(settings) ->
     assert result.exit_code in (0, 127)
     if result.exit_code == 127:
         assert "command not found" in result.stderr
+
+
+def test_mount_source_defaults_to_the_resolved_workspace(settings) -> None:
+    assert settings.sandbox_mount_source == settings.workspace_dir.resolve()
+
+
+def test_host_workspace_override_is_used_as_the_mount_source(settings, monkeypatch) -> None:
+    """When AgentTeam runs in a container the --volume path must name a HOST
+    path; the daemon resolves it, not this process."""
+    monkeypatch.setattr(settings, "host_workspace_root", Path("/host/real/workspace"))
+    argv = build_docker_argv(["ls"], ".", "n", settings)
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "--volume"]
+    assert mounts == [f"/host/real/workspace:{CONTAINER_WORKDIR}:rw"]

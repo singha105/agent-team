@@ -276,7 +276,7 @@ def build_docker_argv(
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=64m",  # noqa: S108 - in-container mount target
         "--volume",
-        f"{workspace_root(settings)}:{CONTAINER_WORKDIR}:rw",
+        f"{settings.sandbox_mount_source}:{CONTAINER_WORKDIR}:rw",
         "--workdir",
         workdir,
         "--env",
