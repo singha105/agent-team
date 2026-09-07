@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "284cbf530576"
@@ -51,9 +52,7 @@ def upgrade() -> None:
     with op.batch_alter_table("tasks", schema=None) as batch_op:
         batch_op.add_column(sa.Column("review_feedback", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True))
-        batch_op.add_column(
-            sa.Column("attempt", sa.Integer(), nullable=False, server_default="1")
-        )
+        batch_op.add_column(sa.Column("attempt", sa.Integer(), nullable=False, server_default="1"))
 
     for old, new in STATUS_RENAMES:
         op.execute(

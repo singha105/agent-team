@@ -16,9 +16,11 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import anthropic
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.budget import BudgetExceeded, BudgetTracker
@@ -29,7 +31,16 @@ from app.agents.tools.base import Tool, ToolOutcome
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.core.pricing import TokenUsage, UnknownModelError, estimate_cost_usd, rates_for
-from app.models import Agent, Message, MessageType, Task, TaskStatus, ToolCall, Usage
+from app.events.bus import EventBus
+from app.events.schemas import (
+    AgentStatusChanged,
+    MessageCreated,
+    TaskStatusChanged,
+    ToolFinished,
+    ToolStarted,
+    UsageUpdated,
+)
+from app.models import Agent, AgentStatus, Message, MessageType, Task, TaskStatus, ToolCall, Usage
 
 log = get_logger(__name__)
 
@@ -58,6 +69,20 @@ class RunResult:
         return self.status in {TaskStatus.NEEDS_REVIEW, TaskStatus.DONE}
 
 
+PREVIEW_CHARS = 240
+
+
+def _preview(value: Any) -> str:
+    """A short excerpt for the event stream.
+
+    The WebSocket is a notification channel; clients fetch full bodies over
+    REST. Sending whole file contents through every subscriber's queue would
+    make a large write_file stall the stream for everyone.
+    """
+    text = value if isinstance(value, str) else str(value)
+    return text if len(text) <= PREVIEW_CHARS else text[:PREVIEW_CHARS] + "…"
+
+
 def _serialize(blocks: Any) -> Any:
     """Convert SDK content blocks to JSON-safe structures for persistence."""
     if isinstance(blocks, list):
@@ -83,11 +108,16 @@ class AgentRuntime:
         session: AsyncSession,
         settings: Settings | None = None,
         client: anthropic.AsyncAnthropic | None = None,
+        bus: EventBus | None = None,
     ) -> None:
         self.config = config
         self.session = session
         self.settings = settings or get_settings()
         self._client = client
+        # Optional so the runtime stays usable from the CLI and from tests that
+        # do not care about streaming.
+        self.bus = bus
+        self._agent_status = AgentStatus.IDLE
         self.tool_schemas, self.tools = build_toolset(config.tools)
         self.budget = BudgetTracker(
             max_iterations=config.max_iterations or self.settings.max_iterations,
@@ -109,6 +139,84 @@ class AgentRuntime:
 
     # -- persistence helpers ----------------------------------------------
 
+    async def _build_conversation(self, task: Task) -> list[dict[str, Any]]:
+        """Assemble the message list to send to the model.
+
+        A first attempt is just the task description. A re-queued task — one the
+        manager rejected — has to resume with everything it already did plus the
+        criticism, or the agent re-reads a workspace it does not remember
+        writing and the feedback lands with no context.
+
+        Rebuilt from the persisted rows rather than kept in memory: the worker
+        that picks up attempt 2 is not the process that ran attempt 1.
+        """
+        if task.attempt <= 1:
+            return [{"role": "user", "content": task.description}]
+
+        rows = (
+            (
+                await self.session.execute(
+                    select(Message).where(Message.task_id == task.id).order_by(Message.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        conversation: list[dict[str, Any]] = []
+        for row in rows:
+            # TOOL_USE rows duplicate blocks already inside the ASSISTANT row for
+            # the same turn; they exist for the trace viewer, not the API.
+            if row.message_type == MessageType.TOOL_USE:
+                continue
+            role = "assistant" if row.message_type == MessageType.ASSISTANT else "user"
+            conversation.append({"role": role, "content": row.content})
+
+        if not conversation:  # pragma: no cover - defensive
+            return [{"role": "user", "content": task.description}]
+
+        # The API requires the last turn to be from the user. A rejection always
+        # appends the manager's feedback, so this normally already holds.
+        if conversation[-1]["role"] != "user":
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": task.review_feedback or "Please revise your previous work.",
+                }
+            )
+        return conversation
+
+    async def _emit(self, event) -> None:
+        if self.bus is not None:
+            await self.bus.publish(event)
+
+    async def set_agent_status(self, status: str, task_id: int | None = None) -> None:
+        """Update the agent's live status and announce it.
+
+        Distinct from task status: the agent is what the UI animates, and it
+        goes idle between tasks while the task itself may sit in needs_review.
+        """
+        if status == self._agent_status:
+            return
+        previous, self._agent_status = self._agent_status, status
+
+        row = (
+            await self.session.execute(select(Agent).where(Agent.key == self.config.key))
+        ).scalar_one_or_none()
+        if row is not None:
+            row.status = status
+            row.status_changed_at = datetime.now(UTC)
+            await self.session.flush()
+
+        await self._emit(
+            AgentStatusChanged(
+                agent_key=self.config.key,
+                status=status,
+                previous_status=previous,
+                task_id=task_id,
+            )
+        )
+
     async def _persist_message(
         self,
         task_id: int,
@@ -119,18 +227,29 @@ class AgentRuntime:
         to_agent: str | None,
         iteration: int,
     ) -> None:
-        self.session.add(
-            Message(
+        row = Message(
+            task_id=task_id,
+            from_agent=from_agent,
+            to_agent=to_agent,
+            role=role,
+            content=_serialize(content),
+            message_type=message_type,
+            iteration=iteration,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        await self._emit(
+            MessageCreated(
                 task_id=task_id,
+                message_id=row.id,
+                message_type=message_type,
+                role=role,
                 from_agent=from_agent,
                 to_agent=to_agent,
-                role=role,
-                content=_serialize(content),
-                message_type=message_type,
                 iteration=iteration,
+                preview=_preview(content),
             )
         )
-        await self.session.flush()
 
     async def _persist_usage(self, task_id: int, usage: TokenUsage, cost: float, it: int) -> None:
         self.session.add(
@@ -147,15 +266,38 @@ class AgentRuntime:
             )
         )
         await self.session.flush()
+        await self._emit(
+            UsageUpdated(
+                task_id=task_id,
+                agent_key=self.config.key,
+                model=self.config.model,
+                iteration=it,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.billable_total,
+                estimated_cost_usd=round(cost, 6),
+                task_total_cost_usd=round(self.budget.cost_usd, 6),
+            )
+        )
 
     async def _set_status(self, task: Task, status: str, halt_reason: str | None = None) -> None:
         # Validated centrally: a task that jumps states illegally has a history
         # that cannot be reconstructed, which defeats the point of the trace.
         validate_transition(task.status, status)
-        task.status = status
+        previous, task.status = task.status, status
         if halt_reason is not None:
             task.halt_reason = halt_reason
         await self.session.flush()
+        await self._emit(
+            TaskStatusChanged(
+                task_id=task.id,
+                agent_key=self.config.key,
+                status=status,
+                previous_status=previous,
+                halt_reason=halt_reason,
+                attempt=task.attempt,
+            )
+        )
 
     # -- tool execution ----------------------------------------------------
 
@@ -219,6 +361,17 @@ class AgentRuntime:
             records.append(record)
         await self.session.flush()
 
+        for block, record in zip(blocks, records, strict=True):
+            await self._emit(
+                ToolStarted(
+                    task_id=task_id,
+                    agent_key=self.config.key,
+                    tool_call_id=record.id,
+                    tool_name=block.name,
+                    arguments_preview=_preview(dict(block.input or {})),
+                )
+            )
+
         outcomes = await asyncio.gather(*(self._invoke_tool(b) for b in blocks))
 
         results: list[dict[str, Any]] = []
@@ -233,6 +386,17 @@ class AgentRuntime:
                     "content": outcome.content,
                     "is_error": outcome.is_error,
                 }
+            )
+            await self._emit(
+                ToolFinished(
+                    task_id=task_id,
+                    agent_key=self.config.key,
+                    tool_call_id=record.id,
+                    tool_name=block.name,
+                    duration_ms=duration_ms,
+                    is_error=outcome.is_error,
+                    error=outcome.content if outcome.is_error else None,
+                )
             )
         await self.session.flush()
         return results
@@ -281,7 +445,7 @@ class AgentRuntime:
     async def run(self, task: Task) -> RunResult:
         """Run the tool-use loop until a final response or a budget trip."""
         system = self.config.resolve_system_prompt(self.settings.agent_configs)
-        messages: list[dict[str, Any]] = [{"role": "user", "content": task.description}]
+        messages = await self._build_conversation(task)
 
         # Pre-flight: a model with no rate entry cannot be costed, and finding
         # that out mid-loop would strand the task after real spend. Check it
@@ -291,9 +455,11 @@ class AgentRuntime:
         except UnknownModelError as exc:
             reason = str(exc).strip('"')
             await self._set_status(task, TaskStatus.FAILED, reason)
+            await self.set_agent_status(AgentStatus.ERROR, task.id)
             return self._result(task, TaskStatus.FAILED, "", reason)
 
         await self._set_status(task, TaskStatus.IN_PROGRESS)
+        await self.set_agent_status(AgentStatus.THINKING, task.id)
         await self._persist_message(
             task.id, "user", task.description, MessageType.USER, None, self.config.key, 0
         )
@@ -315,6 +481,7 @@ class AgentRuntime:
                     self.budget.cost_usd,
                 )
 
+                await self.set_agent_status(AgentStatus.THINKING, task.id)
                 response = await self._call_api(messages, system)
 
                 usage = TokenUsage.from_response_usage(response.usage)
@@ -341,6 +508,7 @@ class AgentRuntime:
                         f"(category: {getattr(details, 'category', 'unknown')})"
                     )
                     await self._set_status(task, TaskStatus.FAILED, reason)
+                    await self.set_agent_status(AgentStatus.ERROR, task.id)
                     return self._result(task, TaskStatus.FAILED, text, reason)
 
                 if response.stop_reason == "max_tokens":
@@ -349,6 +517,7 @@ class AgentRuntime:
                         "response cap and was truncated mid-output"
                     )
                     await self._set_status(task, TaskStatus.FAILED, reason)
+                    await self.set_agent_status(AgentStatus.ERROR, task.id)
                     return self._result(task, TaskStatus.FAILED, text, reason)
 
                 if response.stop_reason == "pause_turn":
@@ -364,7 +533,9 @@ class AgentRuntime:
                 if response.stop_reason in TERMINAL_STOP_REASONS:
                     final_text = text
                     await self._set_status(task, TaskStatus.NEEDS_REVIEW)
-                    log.info("[%s] completed in %d iterations", self.config.key, iteration)
+                    # The work is done; the manager now owes a decision.
+                    await self.set_agent_status(AgentStatus.WAITING_ON_HUMAN, task.id)
+                    log.info("[%s] awaiting review after %d iterations", self.config.key, iteration)
                     return self._result(task, TaskStatus.NEEDS_REVIEW, final_text, None)
 
                 # stop_reason == "tool_use"
@@ -372,6 +543,7 @@ class AgentRuntime:
                 if not tool_uses:
                     reason = f"unexpected stop_reason {response.stop_reason!r} with no tool calls"
                     await self._set_status(task, TaskStatus.FAILED, reason)
+                    await self.set_agent_status(AgentStatus.ERROR, task.id)
                     return self._result(task, TaskStatus.FAILED, text, reason)
 
                 # Echo the assistant turn back verbatim — including thinking
@@ -391,6 +563,7 @@ class AgentRuntime:
                 # Parallel tool calls run concurrently and every result goes
                 # back in ONE user message; splitting them teaches the model to
                 # stop calling tools in parallel.
+                await self.set_agent_status(AgentStatus.WORKING, task.id)
                 results = await self._run_tool_batch(task.id, tool_uses)
 
                 await self._persist_message(
@@ -407,10 +580,13 @@ class AgentRuntime:
         except BudgetExceeded as exc:
             log.warning("[%s] %s", self.config.key, exc)
             await self._set_status(task, TaskStatus.BUDGET_EXCEEDED, str(exc))
+            # Blocked by a ceiling, not broken — distinct from an error.
+            await self.set_agent_status(AgentStatus.BLOCKED, task.id)
             return self._result(task, TaskStatus.BUDGET_EXCEEDED, final_text, str(exc))
         except AgentRuntimeError as exc:
             log.error("[%s] %s", self.config.key, exc)
             await self._set_status(task, TaskStatus.FAILED, str(exc))
+            await self.set_agent_status(AgentStatus.ERROR, task.id)
             return self._result(task, TaskStatus.FAILED, final_text, str(exc))
         except Exception as exc:  # noqa: BLE001
             # Anything unforeseen still has to close the task out. Leaving it
@@ -420,6 +596,7 @@ class AgentRuntime:
             log.exception("[%s] unexpected failure", self.config.key)
             reason = f"unexpected {type(exc).__name__}: {exc}"
             await self._set_status(task, TaskStatus.FAILED, reason)
+            await self.set_agent_status(AgentStatus.ERROR, task.id)
             return self._result(task, TaskStatus.FAILED, final_text, reason)
 
     def _result(self, task: Task, status: str, text: str, reason: str | None) -> RunResult:

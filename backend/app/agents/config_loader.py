@@ -38,6 +38,13 @@ class AgentConfig(BaseModel):
 
     owns: list[str] = Field(default_factory=list)
     personality: str | None = None
+    # Short character bio. Feeds the team-room UI in a later phase; kept in the
+    # agent's own file so identity stays in one place.
+    bio: str | None = None
+    # What this agent must refuse and hand off instead. Stated as data as well
+    # as prose in the prompt so the roster API can show it.
+    does_not_own: list[str] = Field(default_factory=list)
+    hands_off_to: dict[str, str] = Field(default_factory=dict)
 
     # Exactly one of these must be set.
     system_prompt: str | None = None

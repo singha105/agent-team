@@ -114,8 +114,14 @@ def test_round_trip_preserves_data_and_leaves_no_fk_violations(fresh_db: Path) -
     assert conn.execute("pragma foreign_key_check").fetchall() == []
     statuses = {r[0] for r in conn.execute("select status from tasks")}
     # Every surviving status must be one the state machine recognises.
-    assert statuses <= {"queued", "in_progress", "needs_review", "done", "failed",
-                        "budget_exceeded"}
+    assert statuses <= {
+        "queued",
+        "in_progress",
+        "needs_review",
+        "done",
+        "failed",
+        "budget_exceeded",
+    }
     conn.close()
 
 

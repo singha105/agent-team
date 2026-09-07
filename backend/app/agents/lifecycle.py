@@ -44,9 +44,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.BUDGET_EXCEEDED: frozenset(),
 }
 
-TERMINAL_STATES = frozenset(
-    {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.BUDGET_EXCEEDED}
-)
+TERMINAL_STATES = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.BUDGET_EXCEEDED})
 
 
 class IllegalTransitionError(ValueError):
