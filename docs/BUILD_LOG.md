@@ -87,12 +87,23 @@ and referenced from the CLI as `--task 3`.
   profile exist on this machine, so the one step never exercised against the real service is
   `client.messages.create`. Everything on either side of it is verified. This is the first thing to
   run in Phase 2.
-- **`docker-compose.yml`** is in the §2 layout but not written. The app shells out to `docker run`
-  for the sandbox, so containerising the API needs a deliberate decision about Docker-socket
-  access; shipping a compose file that silently breaks the sandbox would be worse than not shipping
-  one.
-- **GitHub Actions CI** — in §2's tooling list but not in the Phase 1 build list.
 - **The other three agent YAMLs** (frontend, database, devops) — Phase 1 specifies the Backend
   agent only.
 - **Inter-agent messaging.** `Message.message_type` includes `agent_to_agent`,
   `Task.parent_task_id` exists, and `BudgetTracker` counts hops, but nothing writes them yet.
+
+### Closed after the phase review
+
+- **`docker-compose.yml` and `docker/backend.Dockerfile`** — written. The api service mounts the
+  host Docker socket to create sibling sandbox containers; the cost of that (the api container
+  gains control of the host daemon) is stated in the compose file and the README rather than left
+  implicit. Running `uvicorn` on the host remains the socket-free alternative.
+- **GitHub Actions CI** — lint, the full suite on Python 3.11/3.12/3.13 with the sandbox image
+  built so container tests execute, migrations applied as their own step, and compose validation.
+  `ANTHROPIC_API_KEY` is empty in CI by design: a test that needs a live key spends money on every
+  push.
+- **A sixth bug, found while writing the compose file.** The sandbox's `--volume` source was built
+  from the *process's* view of the workspace. Docker resolves that path on the host, so a
+  containerised API would have mounted a non-existent path and agents would have appeared to write
+  files that never reached the real workspace — silently, with no error.
+  `AGENTTEAM_HOST_WORKSPACE_ROOT` fixes it.
