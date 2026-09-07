@@ -124,3 +124,68 @@ and referenced from the CLI as `--task 3`.
   containerised API would have mounted a non-existent path and agents would have appeared to write
   files that never reached the real workspace — silently, with no error.
   `AGENTTEAM_HOST_WORKSPACE_ROOT` fixes it.
+
+---
+
+## Phase 2 — Full roster, task lifecycle, live streaming
+
+**Goal:** all four agents exist and can be driven independently over HTTP, with live streaming.
+
+### Built
+
+| Area | Detail |
+|---|---|
+| Roster | Four agent YAMLs. Each prompt states its lane, what it must refuse, and its handoffs; each has a human name, character bio and voice |
+| Lifecycle | `queued → in_progress → needs_review → done`, plus `failed` and `budget_exceeded`; centrally validated |
+| REST | Create/dispatch, list, detail with history, ordered trace, review |
+| Worker | Per-agent asyncio queues; HTTP returns immediately |
+| Events | Seven typed Pydantic events on a sequenced bus, over `/ws` |
+| Types | `scripts/export_types.py` generates the frontend's TS; CI checks for drift |
+| Tests | 236 passing |
+
+### Decisions
+
+**Status vocabulary renamed.** The spec's Phase 2 lifecycle collides with Phase 1's shipped
+`pending/running/completed`. Phase 2's names are authoritative; existing rows are migrated. A
+finished agent loop now lands in `needs_review`, not `done` — `done` is the manager's call.
+
+**Handoffs reference roles, never agent names.** An agent whose prompt says "ask Ines" breaks the
+moment the roster changes, which would defeat the config-driven requirement from section 1.
+
+**One queue per agent.** Serialises an agent's own lane — one character at one desk cannot do two
+things at once — while different agents run concurrently.
+
+**The WebSocket carries notifications, not payloads.** Events carry ids and short previews; clients
+fetch bodies over REST. Otherwise one large `write_file` stalls the stream for every subscriber.
+
+**`completed` → `done`, not `needs_review`, in the migration.** Phase 1 runs finished under rules
+that had no review step; marking them as awaiting review would invent work that was never pending.
+
+### Bugs found and fixed
+
+1. **Agents could not actually run concurrently.** Each run held one transaction open from its
+   first status change until it finished, and SQLite permits a single writer — so the second agent
+   blocked until the first finished. Four agents took 1.10s for four 0.2s tasks. The runtime now
+   commits at each persistence point, which also makes the trace visible *during* a run and leaves
+   it intact after a crash.
+2. **Migrations failed with foreign keys enforced.** `batch_alter_table` rebuilds by
+   create-copy-drop-rename, and `DROP TABLE agents` fails while `tasks` references it. It failed
+   silently — alembic still logged "Running downgrade" — because the first check grepped log text.
+   Tests now assert on exit codes and data.
+3. **The trace viewer showed steps in the wrong order.** SQLite's `CURRENT_TIMESTAMP` is
+   whole-second, so rows in one iteration tied and sorted by per-table id — `write_file` appeared
+   before the instruction that caused it.
+4. **`POST /review` returned 500.** `updated_at` carries `onupdate=func.now()`, so SQLAlchemy
+   invalidates it after the UPDATE regardless of `expire_on_commit=False`, and building the
+   response triggered a lazy load outside greenlet context.
+5. **`IllegalTransitionError` raised `ValueError` while building its own message** for an
+   unrecognised status — exactly the case where the actionable error matters.
+6. **A generated-code f-string used 3.12+ syntax** while the project supports 3.11.
+7. **A leaked asyncio task per disconnected WebSocket client.**
+
+### Deferred
+
+- **The live API call is still unverified** — no credentials on this machine. Unchanged from Phase 1.
+- **The React UI** — Phase 4.
+- **Inter-agent messaging.** `agent_to_agent`, `parent_task_id` and the hop counter all exist and
+  are still unused; agents describe handoffs in prose but cannot yet dispatch to each other.

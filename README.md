@@ -9,8 +9,15 @@ reconstructed exactly.
 
 ## Status
 
-**Phase 1 of 5 — foundations and one working agent.** CLI only, no UI yet. The Backend agent runs
-end to end: it reasons, calls tools, writes code into `workspace/`, and every step lands in the DB.
+**Phase 2 of 5 — full roster, task lifecycle, live streaming.** No UI yet. All four agents run
+independently over HTTP, in the background, with every step streaming over a WebSocket.
+
+| Agent | Name | Model | Owns |
+|---|---|---|---|
+| Backend | Ada | `claude-opus-5` | Endpoints, business rules, auth, service layer |
+| DevOps | Kai | `claude-opus-5` | Containers, CI/CD, env config, deployment, monitoring |
+| Frontend | Mira | `claude-sonnet-5` | Components, client state, styling, accessibility |
+| Database | Ines | `claude-sonnet-5` | Schema, migrations, indexes, query performance |
 
 ## Requirements
 
@@ -29,6 +36,49 @@ cp .env.example .env      # then set ANTHROPIC_API_KEY
 docker build -t agentteam-runtime:latest docker/
 alembic -c backend/alembic.ini upgrade head
 ```
+
+## API
+
+```
+POST   /api/tasks              create and dispatch; returns immediately with a task id
+GET    /api/tasks              list, filterable by agent_key and status
+GET    /api/tasks/{id}         one task with full message and tool-call history
+GET    /api/tasks/{id}/trace   the whole run as one list, ordered in real time
+POST   /api/tasks/{id}/review  approve, or reject with feedback to re-queue
+GET    /api/agents             roster with live status
+WS     /ws                     typed event stream
+```
+
+Tasks execute in a background worker pool — one queue per agent, so an agent's own
+work is serialised while different agents run concurrently. The HTTP request never
+waits on a run.
+
+### Task lifecycle
+
+```
+queued → in_progress → needs_review → done
+              ↓                ↓
+     failed / budget_exceeded  └→ queued   (rejection, with feedback)
+```
+
+Transitions are validated centrally; an illegal move raises rather than corrupting
+the trace. Rejection re-queues the task with your feedback appended as a new user
+message, and the agent resumes with its prior conversation still in context.
+
+### Event stream
+
+Seven typed events — `agent.status_changed`, `task.created`, `task.status_changed`,
+`message.created`, `tool.started`, `tool.finished`, `usage.updated` — each carrying a
+monotonic `seq` so a client can detect a gap. Reconnect with `?since_seq=N` to replay
+what was missed.
+
+TypeScript types are generated from the Pydantic schemas:
+
+```bash
+python scripts/export_types.py
+```
+
+CI fails if the committed `frontend/src/lib/events.ts` drifts from the backend.
 
 ## Running an agent
 
