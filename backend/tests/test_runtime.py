@@ -60,7 +60,7 @@ async def test_loop_terminates_on_end_turn(session, agent, settings) -> None:
 
     result = await AgentRuntime(agent, session, settings, client).run(task)
 
-    assert result.status == TaskStatus.COMPLETED
+    assert result.status == TaskStatus.NEEDS_REVIEW
     assert result.final_text == "All done."
     assert client.call_count == 1
 
@@ -77,7 +77,7 @@ async def test_loop_executes_a_tool_then_finishes(session, agent, settings, work
 
     result = await AgentRuntime(agent, session, settings, client).run(task)
 
-    assert result.status == TaskStatus.COMPLETED
+    assert result.status == TaskStatus.NEEDS_REVIEW
     assert client.call_count == 2
     assert await count(session, ToolCall, task.id) == 1
 
@@ -175,7 +175,7 @@ async def test_pause_turn_is_resumed(session, agent, settings) -> None:
 
     result = await AgentRuntime(agent, session, settings, client).run(task)
 
-    assert result.status == TaskStatus.COMPLETED
+    assert result.status == TaskStatus.NEEDS_REVIEW
     assert client.call_count == 2
 
 
@@ -274,7 +274,7 @@ async def test_sandbox_denial_is_recorded_and_fed_back(session, agent, settings)
 
     result = await AgentRuntime(agent, session, settings, client).run(task)
 
-    assert result.status == TaskStatus.COMPLETED
+    assert result.status == TaskStatus.NEEDS_REVIEW
     call = (await session.execute(select(ToolCall).where(ToolCall.task_id == task.id))).scalar_one()
     assert call.error is not None and "escapes the workspace" in call.error
 
@@ -335,7 +335,7 @@ async def test_ungranted_tool_call_is_refused_without_crashing(session, agent_co
 
     result = await AgentRuntime(agent, session, settings, client).run(task)
 
-    assert result.status == TaskStatus.COMPLETED
+    assert result.status == TaskStatus.NEEDS_REVIEW
     call = (await session.execute(select(ToolCall).where(ToolCall.task_id == task.id))).scalar_one()
     assert "not available" in call.error
 
@@ -433,4 +433,4 @@ async def test_unexpected_exception_never_strands_a_task_in_running(
     assert "ValueError" in result.halt_reason
     refreshed = (await session.execute(select(Task).where(Task.id == task.id))).scalar_one()
     assert refreshed.status == TaskStatus.FAILED
-    assert refreshed.status != TaskStatus.RUNNING
+    assert refreshed.status != TaskStatus.IN_PROGRESS

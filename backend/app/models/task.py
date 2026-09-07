@@ -25,7 +25,7 @@ class Task(Base):
         ForeignKey("agents.id", ondelete="RESTRICT"), index=True, nullable=False
     )
     status: Mapped[str] = mapped_column(
-        String(32), default=TaskStatus.PENDING, index=True, nullable=False
+        String(32), default=TaskStatus.QUEUED, index=True, nullable=False
     )
     # 'human' or an agent key — who created this task.
     created_by: Mapped[str] = mapped_column(String(64), default=HUMAN, nullable=False)
@@ -34,6 +34,13 @@ class Task(Base):
     )
     # Populated when status becomes budget_exceeded or failed.
     halt_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The manager's most recent rejection feedback. Kept after a re-queue so the
+    # trace shows why the task came back, not just that it did.
+    review_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Incremented on every rejection, so attempt 3 is distinguishable from
+    # attempt 1 in the trace.
+    attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

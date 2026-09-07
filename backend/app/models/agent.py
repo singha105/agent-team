@@ -13,6 +13,7 @@ from sqlalchemy import DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
+from app.models.enums import AgentStatus
 
 
 class Agent(Base):
@@ -25,6 +26,15 @@ class Agent(Base):
     model: Mapped[str] = mapped_column(String(128), nullable=False)
     avatar_id: Mapped[str] = mapped_column(String(64), nullable=False)
     system_prompt_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # What the agent is doing right now. Distinct from task status: an agent is
+    # idle between tasks, and a task can be needs_review while its agent has
+    # already moved on.
+    status: Mapped[str] = mapped_column(
+        String(32), default=AgentStatus.IDLE, index=True, nullable=False
+    )
+    status_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

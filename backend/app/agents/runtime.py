@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.budget import BudgetExceeded, BudgetTracker
 from app.agents.config_loader import AgentConfig, get_agent_config
+from app.agents.lifecycle import validate_transition
 from app.agents.tools import build_toolset
 from app.agents.tools.base import Tool, ToolOutcome
 from app.core.config import Settings, get_settings
@@ -54,7 +55,7 @@ class RunResult:
 
     @property
     def ok(self) -> bool:
-        return self.status == TaskStatus.COMPLETED
+        return self.status in {TaskStatus.NEEDS_REVIEW, TaskStatus.DONE}
 
 
 def _serialize(blocks: Any) -> Any:
@@ -148,6 +149,9 @@ class AgentRuntime:
         await self.session.flush()
 
     async def _set_status(self, task: Task, status: str, halt_reason: str | None = None) -> None:
+        # Validated centrally: a task that jumps states illegally has a history
+        # that cannot be reconstructed, which defeats the point of the trace.
+        validate_transition(task.status, status)
         task.status = status
         if halt_reason is not None:
             task.halt_reason = halt_reason
@@ -289,7 +293,7 @@ class AgentRuntime:
             await self._set_status(task, TaskStatus.FAILED, reason)
             return self._result(task, TaskStatus.FAILED, "", reason)
 
-        await self._set_status(task, TaskStatus.RUNNING)
+        await self._set_status(task, TaskStatus.IN_PROGRESS)
         await self._persist_message(
             task.id, "user", task.description, MessageType.USER, None, self.config.key, 0
         )
@@ -359,9 +363,9 @@ class AgentRuntime:
 
                 if response.stop_reason in TERMINAL_STOP_REASONS:
                     final_text = text
-                    await self._set_status(task, TaskStatus.COMPLETED)
+                    await self._set_status(task, TaskStatus.NEEDS_REVIEW)
                     log.info("[%s] completed in %d iterations", self.config.key, iteration)
-                    return self._result(task, TaskStatus.COMPLETED, final_text, None)
+                    return self._result(task, TaskStatus.NEEDS_REVIEW, final_text, None)
 
                 # stop_reason == "tool_use"
                 tool_uses = [b for b in response.content if b.type == "tool_use"]

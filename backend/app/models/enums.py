@@ -12,11 +12,35 @@ HUMAN = "human"
 
 
 class TaskStatus(StrEnum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
+    """Task lifecycle states.
+
+    Phase 2 renamed the Phase 1 vocabulary (pending/running/completed) to
+    match the spec's queued/in_progress/done and added needs_review. Existing
+    rows are migrated; see the alembic revision for the mapping.
+    """
+
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    NEEDS_REVIEW = "needs_review"
+    DONE = "done"
     FAILED = "failed"
     BUDGET_EXCEEDED = "budget_exceeded"
+
+
+class AgentStatus(StrEnum):
+    """What an agent is doing right now. Drives the UI in later phases."""
+
+    IDLE = "idle"
+    THINKING = "thinking"
+    WORKING = "working"
+    WAITING_ON_HUMAN = "waiting_on_human"
+    BLOCKED = "blocked"
+    ERROR = "error"
+
+
+class ReviewDecision(StrEnum):
+    APPROVE = "approve"
+    REJECT = "reject"
 
 
 class MessageType(StrEnum):
