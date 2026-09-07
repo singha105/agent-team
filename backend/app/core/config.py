@@ -70,6 +70,20 @@ class Settings(BaseSettings):
     # --- Logging -----------------------------------------------------------
     log_level: str = Field(default="INFO", alias="AGENTTEAM_LOG_LEVEL")
 
+    @field_validator("host_workspace_root", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: object) -> object:
+        """Treat an empty env var as unset.
+
+        `.env.example` ships AGENTTEAM_HOST_WORKSPACE_ROOT= with no value, so
+        anyone following the README's `cp .env.example .env` would otherwise
+        get Path('.') here — and the sandbox would ask Docker to bind-mount the
+        literal path '.' instead of the workspace.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @field_validator("sandbox_mode")
     @classmethod
     def _valid_sandbox_mode(cls, v: str) -> str:

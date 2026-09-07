@@ -209,3 +209,25 @@ def test_host_workspace_override_is_used_as_the_mount_source(settings, monkeypat
     argv = build_docker_argv(["ls"], ".", "n", settings)
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "--volume"]
     assert mounts == [f"/host/real/workspace:{CONTAINER_WORKDIR}:rw"]
+
+
+def test_blank_host_workspace_env_var_is_treated_as_unset(monkeypatch, tmp_path) -> None:
+    """`cp .env.example .env` must not break the sandbox mount.
+
+    An empty AGENTTEAM_HOST_WORKSPACE_ROOT= would otherwise parse as Path('.')
+    and the sandbox would bind-mount the literal path '.' instead of the
+    workspace.
+    """
+    from app.core import config as config_module
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("AGENTTEAM_WORKSPACE_ROOT", str(workspace))
+    monkeypatch.setenv("AGENTTEAM_HOST_WORKSPACE_ROOT", "")
+    config_module.get_settings.cache_clear()
+    try:
+        fresh = config_module.get_settings()
+        assert fresh.host_workspace_root is None
+        assert fresh.sandbox_mount_source == workspace.resolve()
+    finally:
+        config_module.get_settings.cache_clear()
