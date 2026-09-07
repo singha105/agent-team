@@ -57,6 +57,12 @@ jobs:
       - name: Migrations apply cleanly
         run: alembic -c backend/alembic.ini upgrade head
 
+      - name: Generated TypeScript is in sync
+        # The event schemas are the frontend's contract. If they drift from the
+        # committed .ts, the mismatch surfaces as a runtime bug in the browser
+        # rather than a type error anywhere.
+        run: python scripts/export_types.py --check
+
       - name: Tests
         run: pytest -q
         env:

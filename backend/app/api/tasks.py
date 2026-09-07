@@ -107,6 +107,7 @@ async def create_task(
     # Commit before dispatch: the worker opens its own session and would not
     # see an uncommitted row.
     await session.commit()
+    await session.refresh(task)
     await get_worker_pool().submit(task.id, config.key)
 
     return _summary(task, config.key)
@@ -282,7 +283,7 @@ async def review_task(
 
     if payload.decision == "reject" and not payload.feedback:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             "feedback is required when rejecting: it becomes the agent's next instruction",
         )
 
@@ -333,6 +334,11 @@ async def review_task(
         )
     )
     await session.commit()
+    # updated_at carries onupdate=func.now(), so SQLAlchemy invalidates it after
+    # the UPDATE regardless of expire_on_commit. Building the response would
+    # then trigger a lazy load outside greenlet context and raise
+    # MissingGreenlet. Refresh explicitly, inside the async context.
+    await session.refresh(task)
 
     if payload.decision == "reject":
         await get_worker_pool().submit(task.id, agent_key)
