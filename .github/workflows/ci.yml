@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check .
+
+      - name: black
+        run: black --check .
+
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # Built so the sandbox integration tests actually run rather than
+      # skipping. Ubuntu runners ship a working Docker daemon.
+      - name: Build sandbox runtime image
+        run: docker build -t agentteam-runtime:latest docker/
+
+      - name: Migrations apply cleanly
+        run: alembic -c backend/alembic.ini upgrade head
+
+      - name: Tests
+        run: pytest -q
+        env:
+          # Deliberately unset: no test may require a live API key. A test that
+          # needs one is a test that spends money in CI.
+          ANTHROPIC_API_KEY: ""
+
+  compose:
+    name: compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+        env:
+          ANTHROPIC_API_KEY: ci-placeholder

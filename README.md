@@ -42,6 +42,26 @@ Output lands in `workspace/`. Inspect the trace with:
 python -m app.cli show --task <task_id>
 ```
 
+## Running the API
+
+On the host:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Or with Compose, which also builds the sandbox image first:
+
+```bash
+docker compose up --build
+```
+
+Compose mounts the host Docker socket so the API can create sibling sandbox
+containers. That gives the API container control of the host daemon, so read the
+comment at the top of `docker-compose.yml` before using it. The trust boundary is
+unchanged: AgentTeam's own code is trusted, agent-generated code is not, and agent
+code still runs only in the locked-down sibling container.
+
 ## Configuration
 
 Agent identity is data, not code. Each agent is one YAML file in `config/agents/`:
@@ -115,3 +135,8 @@ pytest                       # unit tests (no Docker needed)
 pytest -m integration        # container tests (needs a Docker daemon)
 ruff check . && black --check .
 ```
+
+CI runs the same three gates on every push and pull request — lint, the full
+test suite on Python 3.11/3.12/3.13 with the sandbox image built so the
+container tests actually execute, and a `docker compose config` validation. No
+test requires an API key; a test that needed one would spend money in CI.
