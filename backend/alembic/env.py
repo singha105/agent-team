@@ -63,6 +63,11 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
+        # SQLite takes Alembic's non-transactional DDL path, so CREATE TABLE
+        # auto-commits but the alembic_version INSERT does not. Without this
+        # commit `upgrade head` appears to succeed while leaving the database
+        # unstamped, and the next upgrade tries to recreate existing tables.
+        connection.commit()
 
 
 if context.is_offline_mode():
