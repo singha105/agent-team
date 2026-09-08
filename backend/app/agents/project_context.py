@@ -45,7 +45,7 @@ def is_project_file(path: str, settings: Settings | None = None) -> bool:
     """
     try:
         return resolve_in_workspace(path, settings) == project_file_path(settings)
-    except Exception:
+    except Exception:  # noqa: BLE001 - any resolution failure means 'not this file'
         return False
 
 

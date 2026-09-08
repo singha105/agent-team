@@ -332,3 +332,51 @@ async def test_preflight_without_a_key_exits_two(wire_settings, monkeypatch) -> 
         assert await cmd_preflight(args) == 2
     finally:
         cfg.get_settings.cache_clear()
+
+
+def test_the_validator_catches_a_tool_use_separated_from_its_result() -> None:
+    """Proves the adjacency check is not vacuous. This is the exact shape the
+    conversation rebuild used to produce after a delegation plus a rejection."""
+    from tests.wire_server import validate_request
+
+    broken = {
+        "model": "claude-opus-5",
+        "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": "do it"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "ask_agent", "input": {}}],
+            },
+            # An agent_to_agent row replayed in between — what used to happen.
+            {"role": "user", "content": "schema?"},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}],
+            },
+        ],
+    }
+    error = validate_request(broken)
+    assert error is not None
+    assert "not answered by the next message" in error
+
+
+def test_the_validator_accepts_a_correct_tool_use_pair() -> None:
+    from tests.wire_server import validate_request
+
+    good = {
+        "model": "claude-opus-5",
+        "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": "do it"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "ask_agent", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}],
+            },
+        ],
+    }
+    assert validate_request(good) is None

@@ -99,12 +99,21 @@ class AgentMessageBus:
         to_agent: str,
         content: str,
         iteration: int,
+        is_reply: bool = False,
     ) -> Message:
+        """Persist one crossing between agents.
+
+        `role` doubles as the discriminator between an initiating message and a
+        reply. A hop is a crossing the sender chose to make; the answer coming
+        back is the return leg of that same hop, not a second one. Without the
+        distinction, a context rebuilt from the database counts every ask twice
+        and halves the effective hop budget.
+        """
         row = Message(
             task_id=task_id,
             from_agent=from_agent,
             to_agent=to_agent,
-            role="assistant",
+            role="user" if is_reply else "assistant",
             content=content,
             message_type=MessageType.AGENT_TO_AGENT,
             iteration=iteration,
@@ -119,7 +128,7 @@ class AgentMessageBus:
                 task_id=task_id,
                 message_id=message_id,
                 message_type=MessageType.AGENT_TO_AGENT,
-                role="assistant",
+                role="user" if is_reply else "assistant",
                 from_agent=from_agent,
                 to_agent=to_agent,
                 iteration=iteration,
@@ -163,7 +172,6 @@ class AgentMessageBus:
         woken_task_id: int | None = None
         if wake is not None and parent_task is not None:
             woken_task_id = await self._wake(
-                context=context,
                 from_agent=from_agent,
                 to_agent=to_agent,
                 content=content,
@@ -192,7 +200,6 @@ class AgentMessageBus:
 
     async def _wake(
         self,
-        context: DelegationContext,
         from_agent: str,
         to_agent: str,
         content: str,
@@ -329,7 +336,9 @@ class AgentMessageBus:
 
         # The reply is recorded in the direction it travelled, so the trace
         # reads as a conversation rather than a list of one-way sends.
-        await self._record(context.root_task_id, to_agent, from_agent, answer, iteration)
+        await self._record(
+            context.root_task_id, to_agent, from_agent, answer, iteration, is_reply=True
+        )
 
         return Delivery(
             delivered=True,
@@ -341,7 +350,7 @@ class AgentMessageBus:
 
 __all__ = [
     "AgentMessageBus",
-    "Delivery",
     "DelegationError",
+    "Delivery",
     "UnknownRecipientError",
 ]

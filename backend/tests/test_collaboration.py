@@ -616,3 +616,86 @@ async def test_delegation_works_end_to_end_through_the_api(api_settings, monkeyp
     finally:
         await pool.stop()
         await db_module.dispose_engine()
+
+
+# -- durable budget and conversation rebuild ------------------------------
+
+
+async def test_restored_hops_match_the_in_memory_count(session, collab_settings) -> None:
+    """An ask records two messages — a question and its answer — but is one
+    crossing. Counting both would halve the effective hop budget the moment a
+    context is rebuilt, which happens on every woken or re-queued task."""
+    from app.agents.delegation import restore_context
+
+    scripts = handoff_scripts()
+    task = await make_task(session, "backend", "Build a book library API")
+    from app.agents.config_loader import get_agent_config
+
+    result_runtime = AgentRuntime(
+        get_agent_config("backend"),
+        session,
+        collab_settings,
+        client=scripts("backend"),
+        client_for=scripts,
+    )
+    await result_runtime.run(task)
+
+    in_memory = result_runtime.delegation.hops
+    restored = await restore_context(
+        session, task, max_hops=10, deadline_seconds=600, agent_key="backend"
+    )
+    assert in_memory == 1
+    assert (
+        restored.hops == in_memory
+    ), "the rebuilt budget disagrees with the live one; an ask is being counted twice"
+
+
+async def test_a_rebuilt_conversation_keeps_tool_use_beside_its_result(
+    session, collab_settings
+) -> None:
+    """agent_to_agent rows are a trace side-channel. Replaying them would tell
+    the agent that the manager asked its own question, duplicate the teammate's
+    answer, and wedge both between a tool_use and the tool_result that must
+    follow it."""
+    from app.agents.config_loader import get_agent_config
+    from app.models import Message, MessageType
+
+    scripts = handoff_scripts()
+    task = await make_task(session, "backend", "Build a book library API")
+    await run(session, collab_settings, "backend", task, scripts)
+
+    # Reject, as the manager would.
+    task.status = TaskStatus.QUEUED
+    task.attempt = 2
+    task.review_feedback = "Add error handling."
+    session.add(
+        Message(
+            task_id=task.id,
+            from_agent=None,
+            to_agent="backend",
+            role="user",
+            content="Add error handling.",
+            message_type=MessageType.USER,
+            iteration=0,
+        )
+    )
+    await session.flush()
+    await session.commit()
+
+    runtime = AgentRuntime(get_agent_config("backend"), session, collab_settings)
+    conversation = await runtime._build_conversation(task)
+
+    for index, message in enumerate(conversation):
+        blocks = message["content"] if isinstance(message["content"], list) else []
+        if any(isinstance(b, dict) and b.get("type") == "tool_use" for b in blocks):
+            following = conversation[index + 1]["content"]
+            assert isinstance(following, list)
+            assert any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in following
+            ), "a tool_use turn is not immediately followed by its tool_result"
+
+    # The agent's own outbound question must not reappear as a manager message.
+    user_texts = [
+        m["content"] for m in conversation if m["role"] == "user" and isinstance(m["content"], str)
+    ]
+    assert not any("What tables and columns" in t for t in user_texts)

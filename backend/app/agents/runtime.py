@@ -191,11 +191,19 @@ class AgentRuntime:
             .all()
         )
 
+        # Rows that exist for the trace but must not be replayed to the model.
+        #
+        # TOOL_USE duplicates blocks already inside the ASSISTANT row for the
+        # same turn. AGENT_TO_AGENT is a side-channel record of a delegation the
+        # model already saw as a tool_use/tool_result pair — replaying it would
+        # tell the agent that the *manager* asked its own question, duplicate
+        # the teammate's answer, and wedge both between a tool_use and the
+        # tool_result that must follow it.
+        SIDE_CHANNEL = {MessageType.TOOL_USE, MessageType.AGENT_TO_AGENT}
+
         conversation: list[dict[str, Any]] = []
         for row in rows:
-            # TOOL_USE rows duplicate blocks already inside the ASSISTANT row for
-            # the same turn; they exist for the trace viewer, not the API.
-            if row.message_type == MessageType.TOOL_USE:
+            if row.message_type in SIDE_CHANNEL:
                 continue
             role = "assistant" if row.message_type == MessageType.ASSISTANT else "user"
             conversation.append({"role": role, "content": row.content})
@@ -729,7 +737,7 @@ class AgentRuntime:
             await self._set_status(task, TaskStatus.FAILED, str(exc))
             await self.set_agent_status(AgentStatus.ERROR, task.id)
             return self._result(task, TaskStatus.FAILED, final_text, str(exc))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - closes the task out, logged in full
             # Anything unforeseen still has to close the task out. Leaving it
             # in RUNNING strands it: no status, no reason, and the trace stops
             # mid-run with nothing saying why. The traceback is logged in full

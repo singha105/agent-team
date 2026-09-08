@@ -113,13 +113,24 @@ def validate_request(body: dict[str, Any]) -> str | None:
         if not isinstance(schema.get("properties"), dict):
             return f"tools.{tool.get('name')}: input_schema needs a properties object"
 
-    # tool_result blocks must reference a tool_use id from an earlier turn.
+    # tool_result blocks must reference a tool_use id from an earlier turn, and
+    # an assistant turn that requests tools must be answered by the very next
+    # message. Checking only the ids would miss a conversation that wedges
+    # unrelated turns between a tool_use and its result.
     offered: set[str] = set()
+    awaiting: set[str] = set()
     for message in messages:
         content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
+        blocks = content if isinstance(content, list) else []
+        block_types = {b.get("type") for b in blocks if isinstance(b, dict)}
+
+        if awaiting and "tool_result" not in block_types:
+            return (
+                f"messages: tool_use {sorted(awaiting)} was not answered by the next "
+                "message; a tool_use turn must be followed immediately by its tool_result"
+            )
+
+        for block in blocks:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "tool_use":
@@ -132,6 +143,12 @@ def validate_request(body: dict[str, Any]) -> str | None:
                         f"tool_result: tool_use_id {block['tool_use_id']!r} does not "
                         "match any tool_use block in the conversation"
                     )
+                awaiting.discard(block["tool_use_id"])
+
+        if message.get("role") == "assistant":
+            awaiting = {
+                b.get("id") for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"
+            }
     return None
 
 

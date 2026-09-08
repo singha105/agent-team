@@ -187,6 +187,10 @@ async def restore_context(
             .where(
                 Message.task_id.in_(tree_ids),
                 Message.message_type == MessageType.AGENT_TO_AGENT,
+                # Replies carry role 'user' and are the return leg of a hop
+                # already counted. Counting them would double every ask and
+                # halve the effective budget after a restore.
+                Message.role != "user",
             )
         )
     ).scalar_one() or 0
