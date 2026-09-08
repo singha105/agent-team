@@ -20,6 +20,24 @@ from pathlib import Path
 from app.agents.sandbox import resolve_in_workspace, workspace_root
 from app.core.config import Settings, get_settings
 
+try:  # pragma: no cover - platform dependent
+    import fcntl
+
+    def _lock(handle) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+    def _unlock(handle) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+except ImportError:  # pragma: no cover - Windows has no fcntl
+
+    def _lock(handle) -> None:
+        """No advisory locking available; single-process use is still safe."""
+
+    def _unlock(handle) -> None:
+        """Counterpart to the no-op lock."""
+
+
 PROJECT_FILE = "PROJECT.md"
 MAX_SECTION_CHARS = 20_000
 MAX_FILE_CHARS = 400_000
@@ -99,10 +117,21 @@ def append_section(
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     section = f"\n\n---\n\n## {heading}\n\n_added by **{agent_key}** at {stamp}_\n\n{body}\n"
 
-    # Append mode, not read-modify-write: two agents appending at once cannot
-    # clobber each other, and a crash mid-write cannot lose what was there.
+    # Append mode, not read-modify-write: a crash mid-write cannot lose what was
+    # already there.
+    #
+    # The lock is belt and braces. Today AgentTeam is a single process and
+    # append_section has no await point, so asyncio tasks cannot interleave
+    # inside it. Running more than one uvicorn worker would break that
+    # assumption silently, and a 20,000 character section is far above any
+    # atomic-write guarantee, so two processes could interleave mid-section.
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(section)
+        _lock(handle)
+        try:
+            handle.write(section)
+            handle.flush()
+        finally:
+            _unlock(handle)
 
     return True, f"Appended '{heading}' to {PROJECT_FILE} ({len(body)} characters)."
 

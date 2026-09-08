@@ -124,3 +124,57 @@ def test_concurrent_appends_do_not_clobber_each_other(settings) -> None:
     content = read_context(settings)
     for i in range(25):
         assert f"body {i}" in content
+
+
+def test_concurrent_processes_cannot_interleave_a_section(settings, tmp_path: Path) -> None:
+    """A 20,000 character section is far above any atomic-write guarantee, so
+    two processes appending at once could otherwise split each other's writes.
+
+    Single-process asyncio is already safe — append_section has no await point —
+    but running more than one uvicorn worker would break that silently, and a
+    corrupted shared context is exactly the failure this file exists to prevent.
+    """
+    import concurrent.futures
+    import os
+    import re
+    import subprocess
+    import sys
+
+    script = tmp_path / "appender.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from app.core.config import get_settings\n"
+        "get_settings.cache_clear()\n"
+        "from app.agents.project_context import append_section\n"
+        "i = int(sys.argv[1])\n"
+        "append_section(f'agent{i}', f'Decision {i}', ('AGENT%d-' % i) * 2200)\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ, AGENTTEAM_WORKSPACE_ROOT=str(settings.workspace_dir))
+
+    with concurrent.futures.ThreadPoolExecutor(8) as pool:
+        results = list(
+            pool.map(
+                lambda i: subprocess.run(
+                    [sys.executable, str(script), str(i)],
+                    env=env,
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                ),
+                range(8),
+            )
+        )
+    assert all(r.returncode == 0 for r in results), [r.stderr.decode() for r in results]
+
+    content = read_context(settings)
+    assert content.count("## Decision") == 8
+
+    for i in range(8):
+        match = re.search(
+            rf"## Decision {i}\n\n_added by[^\n]*\n\n(.*?)(?=\n\n---|\Z)", content, re.S
+        )
+        assert match, f"agent{i}'s section is missing"
+        intruders = sorted({j for j in range(8) if j != i and f"AGENT{j}-" in match.group(1)})
+        assert not intruders, f"agent{i}'s section was interleaved with {intruders}"
