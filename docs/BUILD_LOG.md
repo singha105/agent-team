@@ -265,3 +265,56 @@ Sonnet rates rather than the caller's Opus rates.
 - **Agents cannot yet start work on a notification.** `send_message` is persisted and
   visible in the trace, but the recipient only sees it when its next task begins; nothing
   wakes an idle agent.
+
+---
+
+## Post-Phase 3 — closing the two open items
+
+### 1. The live API path was unverified
+
+Every suite replaced `client.messages.create` with a scripted object, which proves the
+loop logic and nothing about the request we would actually send. A wrong parameter name,
+a malformed tool schema or a misread `usage` field passed all of them.
+
+**Contract tests** now drive a real `anthropic.AsyncAnthropic` over real HTTP against a
+local server speaking the Messages API wire format, so the SDK does the real encoding and
+the real parsing. The server enforces the documented constraints — first message must be
+a user turn, no assistant prefill, no `thinking.budget_tokens`, valid effort levels,
+well-formed tool schemas, and `tool_result` ids matching an earlier `tool_use`. One test
+per shipped agent, so a typo in any model id or tool grant is caught.
+
+**`python -m app.cli preflight`** makes one small real call and reports what came back —
+model, stop reason, content block types, usage, actual cost. It prints the cost estimate
+before sending, `--dry-run` shows the request without sending, and each failure mode
+names its own fix.
+
+**Still not closed, and cannot be from here:** whether Anthropic's service accepts the
+request. There are no credentials on this machine and none are being handled. `preflight`
+is the one command that closes it.
+
+### 2. Notifications woke nobody
+
+`send_message` was fire-and-forget for the sender and inert for the recipient — the
+message sat unread until that agent happened to get another task.
+
+It now queues a follow-up task, so an idle teammate acts on it. The sender still does not
+wait; the task is queued rather than run inline, which is what keeps the call
+fire-and-forget.
+
+**The containment mattered more than the delivery.** Once a notification can start work,
+an unbounded notification is an unbounded amount of work. Three limits bound it — a hop
+from the tree's shared budget, cycle detection refusing a recipient already in the chain,
+and the tree-wide wall clock — and a four-agent notification storm terminates on cycle
+detection after three hops.
+
+**The budget had to become durable.** An in-memory context is gone by the time the worker
+picks up a woken task, so `restore_context` rebuilds it from persisted state: hops counted
+from the agent-to-agent messages in the tree, the chain from task ancestry, the deadline
+measured from the root task's creation. Without it every woken task would reset the
+budget. This also fixed the same latent gap for re-queued tasks after a rejection.
+
+The woken task is framed as a notification rather than an instruction, and says that
+acknowledging and stopping is a valid outcome — an agent handed a bare message treats it
+as an order, and "the contract is published" becomes a second project.
+
+`AGENTTEAM_WAKE_ON_NOTIFY=false` restores the previous behaviour.

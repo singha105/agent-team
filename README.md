@@ -88,7 +88,7 @@ Agents have three tools beyond the filesystem:
 | Tool | Blocking | Effect |
 |---|---|---|
 | `ask_agent` | yes | Creates a child task, runs it, returns the answer as the tool result |
-| `send_message` | no | A one-way note, persisted, nothing waits |
+| `send_message` | no | A one-way note. The sender does not wait, but the recipient is woken with a follow-up task so an idle agent actually acts on it |
 | `append_project_context` | no | Publishes a decision to `workspace/PROJECT.md` |
 
 `PROJECT.md` is the team's shared context — the schema, the API contract, the
@@ -118,11 +118,33 @@ Three limits, all shared by a whole delegation tree rather than per run:
 A refusal reaches the agent as a tool error it can work around, not an exception that
 kills the run.
 
+These limits are durable, not just in-memory. A task the worker picks up later — a
+woken notification, or a rejected task re-queued — rebuilds its budget from the
+database: hops counted from the agent-to-agent messages already in the tree, the chain
+from task ancestry, and the deadline measured from the root task's creation. Without
+that, every woken task would reset the budget.
+
+Set `AGENTTEAM_WAKE_ON_NOTIFY=false` to make notifications inert records instead.
+
 ### Cost attribution
 
 `GET /api/tasks/{id}` and `/trace` report the task's own spend **and** a `tree`
 rollup covering every delegated child, broken down per agent and per model. Reporting
 only the root understates the work by whatever the delegation cost.
+
+## Verifying the live API
+
+Every test in this project runs without an API key: most replace the model with a
+scripted object, and the contract suite drives the real Anthropic SDK over real HTTP
+against a local server speaking the Messages API wire format. Together they prove the
+request is well formed, the tool schemas are valid, and the response parses.
+
+What they cannot prove is that Anthropic's service accepts it. One command does:
+
+```bash
+python -m app.cli preflight            # one small real call, cost stated up front
+python -m app.cli preflight --dry-run  # show the request and estimate, send nothing
+```
 
 ## Running an agent
 
