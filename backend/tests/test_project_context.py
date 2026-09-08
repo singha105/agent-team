@@ -34,9 +34,9 @@ def test_appending_preserves_what_was_there(settings) -> None:
     assert "GET /books" in content
     # Match the section headings, not bare words: the file's own header
     # mentions "the schema, the API contract" and would match first.
-    assert content.index("## Schema") < content.index("## API contract"), (
-        "append order must be preserved"
-    )
+    assert content.index("## Schema") < content.index(
+        "## API contract"
+    ), "append order must be preserved"
 
 
 def test_each_section_records_its_author(settings) -> None:

@@ -545,3 +545,74 @@ async def test_send_message_is_recorded_but_blocks_nothing(session, collab_setti
         (await session.execute(select(Task).where(Task.parent_task_id == task.id))).scalars().all()
     )
     assert children == [], "a notification must not create a child task"
+
+
+# -- through the HTTP path -------------------------------------------------
+
+
+async def test_delegation_works_end_to_end_through_the_api(api_settings, monkeypatch) -> None:
+    """The exit criterion: one task to Backend, and the team collaborates with
+    no further human input.
+
+    Driven through the real router and worker rather than the runtime directly,
+    so the client factory reaching a delegated run is exercised too.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    import app.models  # noqa: F401
+    from app.events.bus import EventBus
+    from app.main import app as fastapi_app
+    from app.workers import queue as queue_module
+    from app.workers.queue import TaskWorkerPool
+
+    engine = db_module.get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(db_module.Base.metadata.create_all)
+
+    scripts = handoff_scripts()
+    bus = EventBus()
+    monkeypatch.setattr("app.events.bus._bus", bus)
+    monkeypatch.setattr("app.api.tasks.get_event_bus", lambda: bus)
+    pool = TaskWorkerPool(settings=api_settings, bus=bus, client_factory=scripts)
+    monkeypatch.setattr(queue_module, "_pool", pool)
+    monkeypatch.setattr("app.api.tasks.get_worker_pool", lambda: pool)
+    await pool.start(["backend", "database", "devops", "frontend"])
+
+    try:
+        transport = ASGITransport(app=fastapi_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            created = (
+                await client.post(
+                    "/api/tasks",
+                    json={
+                        "agent_key": "backend",
+                        "description": "Build a REST API for a book library with search",
+                    },
+                )
+            ).json()
+            assert await pool.wait_until_idle(timeout=30)
+
+            detail = (await client.get(f"/api/tasks/{created['id']}")).json()
+
+            assert detail["status"] == "needs_review"
+            # The delegated run got its own agent's client, not the caller's.
+            assert "database" in scripts.clients
+
+            depths = {n["agent_key"]: n["depth"] for n in detail["delegation"]}
+            assert depths == {"backend": 0, "database": 1}
+
+            tree = detail["tree"]
+            assert tree["delegated_task_count"] == 1
+            assert tree["estimated_cost_usd"] > detail["total_cost_usd"]
+            models = {a["agent_key"]: a["model"] for a in tree["by_agent"]}
+            assert models == {"backend": "claude-opus-5", "database": "claude-sonnet-5"}
+
+            exchanges = [m for m in detail["messages"] if m["message_type"] == "agent_to_agent"]
+            assert len(exchanges) == 2
+            assert (exchanges[0]["from_agent"], exchanges[0]["to_agent"]) == (
+                "backend",
+                "database",
+            )
+    finally:
+        await pool.stop()
+        await db_module.dispose_engine()

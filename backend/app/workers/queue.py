@@ -159,7 +159,16 @@ class TaskWorkerPool:
                 return
 
             client = self.client_factory(item.agent_key) if self.client_factory else None
-            runtime = AgentRuntime(config, session, self.settings, client=client, bus=self.bus)
+            runtime = AgentRuntime(
+                config,
+                session,
+                self.settings,
+                client=client,
+                bus=self.bus,
+                # Passed down so a delegated run builds its own client for the
+                # agent it belongs to, rather than reusing the caller's.
+                client_for=self.client_factory,
+            )
             result = await runtime.run(task)
             log.info(
                 "task %s finished as %s (%s)",
