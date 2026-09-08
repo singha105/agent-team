@@ -168,6 +168,8 @@ class TaskWorkerPool:
                 # Passed down so a delegated run builds its own client for the
                 # agent it belongs to, rather than reusing the caller's.
                 client_for=self.client_factory,
+                # Lets a notified agent be woken with a queued follow-up task.
+                wake=self.submit,
             )
             result = await runtime.run(task)
             log.info(

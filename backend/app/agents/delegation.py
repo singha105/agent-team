@@ -149,3 +149,86 @@ def new_root_context(
         deadline_seconds=deadline_seconds,
         chain=(agent_key,),
     )
+
+
+async def restore_context(
+    session, task, max_hops: int, deadline_seconds: float, agent_key: str
+) -> DelegationContext:
+    """Rebuild a tree's delegation state from the database.
+
+    An in-memory context is passed down through nested `ask_agent` calls, but a
+    task the worker picks up later — a notification that woke an idle agent, or
+    a rejected task re-queued for another attempt — has no such parent to
+    inherit from. Reconstructing from persisted state keeps one budget across
+    the whole tree even when it spans process boundaries.
+
+    Three things are derived rather than stored, so there is no second copy to
+    fall out of step with the trace:
+
+      hops     — one per agent-to-agent message already recorded in the tree
+      chain    — the agent keys from the root down to this task
+      deadline — measured from the root task's creation, not from now, so a
+                 woken task cannot restart the clock
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import func, select
+
+    from app.agents.rollup import root_task_id_for, task_tree_ids
+    from app.models import Agent, Message, MessageType, Task
+
+    root_id = await root_task_id_for(session, task.id)
+    tree_ids = await task_tree_ids(session, root_id)
+
+    hops = (
+        await session.execute(
+            select(func.count())
+            .select_from(Message)
+            .where(
+                Message.task_id.in_(tree_ids),
+                Message.message_type == MessageType.AGENT_TO_AGENT,
+            )
+        )
+    ).scalar_one() or 0
+
+    # The chain is the ancestry: root agent first, this one last.
+    chain: list[str] = []
+    current: int | None = task.id
+    seen: set[int] = set()
+    while current is not None and current not in seen:
+        seen.add(current)
+        row = (
+            await session.execute(
+                select(Agent.key, Task.parent_task_id)
+                .join(Task, Task.assigned_agent_id == Agent.id)
+                .where(Task.id == current)
+            )
+        ).one_or_none()
+        if row is None:
+            break
+        chain.append(row[0])
+        current = row[1]
+    chain.reverse()
+    if not chain:
+        chain = [agent_key]
+
+    root_created = (
+        await session.execute(select(Task.created_at).where(Task.id == root_id))
+    ).scalar_one_or_none()
+
+    counters = _TreeCounters(hops=int(hops))
+    if root_created is not None:
+        if root_created.tzinfo is None:
+            root_created = root_created.replace(tzinfo=UTC)
+        already_spent = (datetime.now(UTC) - root_created).total_seconds()
+        # Shift the monotonic origin back so `elapsed` reflects the age of the
+        # tree rather than the age of this process's context object.
+        counters.started_monotonic = time.monotonic() - max(0.0, already_spent)
+
+    return DelegationContext(
+        root_task_id=root_id,
+        max_hops=max_hops,
+        deadline_seconds=deadline_seconds,
+        chain=tuple(chain),
+        counters=counters,
+    )

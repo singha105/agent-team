@@ -19,7 +19,7 @@ UI what happened.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -137,13 +137,21 @@ class AgentMessageBus:
         to_agent: str,
         content: str,
         task_id: int,
+        parent_task: Task | None = None,
         iteration: int = 0,
+        wake: Any = None,
     ) -> Delivery:
-        """Fire-and-forget. Persisted, counted, but nothing waits on it.
+        """Fire-and-forget, but not inert: the recipient is woken to act on it.
 
-        A notification still costs a hop. It is a message crossing between
-        agents, and letting it be free would give an easy way to spam the team
-        past any limit.
+        The sender does not wait — that is what makes it fire-and-forget — but
+        the message does not sit unread until the recipient happens to get
+        another task. A follow-up task is created for them and queued, so a
+        notification actually reaches someone who is idle.
+
+        A notification costs a hop like any other crossing. Letting it be free
+        would give an easy way to spam the team past every limit, and now that
+        each one can start work, an unbounded notification is an unbounded
+        amount of work.
         """
         self._resolve(to_agent, from_agent)
         context.authorise(to_agent)
@@ -151,12 +159,98 @@ class AgentMessageBus:
 
         row = await self._record(task_id, from_agent, to_agent, content, iteration)
         log.info("[%s → %s] notify (task %s)", from_agent, to_agent, task_id)
+
+        woken_task_id: int | None = None
+        if wake is not None and parent_task is not None:
+            woken_task_id = await self._wake(
+                context=context,
+                from_agent=from_agent,
+                to_agent=to_agent,
+                content=content,
+                parent_task=parent_task,
+                wake=wake,
+            )
+
+        if woken_task_id is not None:
+            detail = (
+                f"Message delivered to {to_agent}, and they have been given a follow-up "
+                f"task (#{woken_task_id}) to act on it. You are not waiting for them — "
+                "continue with your own work."
+            )
+        else:
+            detail = (
+                f"Message delivered to {to_agent}. It is recorded in the trace and will be "
+                f"visible to {to_agent} on its next task. Nothing is waiting on a reply."
+            )
+
         return Delivery(
             delivered=True,
-            detail=f"Message delivered to {to_agent}. It is recorded in the trace and "
-            f"will be visible to {to_agent} on its next task. Nothing is waiting on a reply.",
+            detail=detail,
             message_id=row.id,
+            child_task_id=woken_task_id,
         )
+
+    async def _wake(
+        self,
+        context: DelegationContext,
+        from_agent: str,
+        to_agent: str,
+        content: str,
+        parent_task: Task,
+        wake: Any,
+    ) -> int | None:
+        """Queue a follow-up task so an idle recipient acts on a notification.
+
+        Deliberately framed as a notification rather than an instruction. An
+        agent handed a bare message treats it as an order and invents work from
+        an FYI; telling it that acknowledging and stopping is a valid outcome is
+        what keeps 'the contract is published' from becoming a second project.
+        """
+        agent_row = (
+            await self.session.execute(select(Agent).where(Agent.key == to_agent))
+        ).scalar_one_or_none()
+        if agent_row is None:
+            from app.agents.runtime import sync_agent_row
+
+            agent_row = await sync_agent_row(self.session, get_agent_config(to_agent))
+
+        description = (
+            f"{from_agent} sent you this message:\n\n"
+            f"---\n{content}\n---\n\n"
+            "Decide whether it needs anything from you. If it does, do that work and "
+            "say what you did. If it is only something to be aware of — a contract "
+            "published, an assumption changed — acknowledge it in one line and stop. "
+            "Do not invent work that was not asked for."
+        )
+
+        follow_up = Task(
+            title=f"[{from_agent} → {to_agent}] {content[:80]}",
+            description=description,
+            assigned_agent_id=agent_row.id,
+            created_by=from_agent,
+            parent_task_id=parent_task.id,
+            status=TaskStatus.QUEUED,
+        )
+        self.session.add(follow_up)
+        await self.session.flush()
+        follow_up_id = follow_up.id
+        await self.session.commit()
+
+        await self._emit(
+            TaskCreated(
+                task_id=follow_up_id,
+                agent_key=to_agent,
+                title=follow_up.title,
+                status=follow_up.status,
+                created_by=from_agent,
+            )
+        )
+
+        # Queued, not run inline: the sender is explicitly not waiting, and
+        # running it here would make a fire-and-forget call blocking.
+        await wake(follow_up_id, to_agent)
+        log.info("[%s → %s] woke recipient with task %s", from_agent, to_agent, follow_up_id)
+        return follow_up_id
 
     # -- ask ---------------------------------------------------------------
 

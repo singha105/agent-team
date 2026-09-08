@@ -31,6 +31,10 @@ class ToolContext:
     settings: Any = None
     # Injected by the runtime; runs a child task to completion.
     run_child: Any = None
+    # Injected by the runtime; queues a task so a notified agent acts on it.
+    # None when there is no worker pool (the CLI, or tests that do not need one),
+    # in which case a notification is still delivered but wakes no one.
+    wake: Any = None
 
 
 async def send_message(context: ToolContext, to_agent: str, content: str) -> ToolOutcome:
@@ -48,7 +52,9 @@ async def send_message(context: ToolContext, to_agent: str, content: str) -> Too
             to_agent=to_agent,
             content=content,
             task_id=context.task.id,
+            parent_task=context.task,
             iteration=context.iteration,
+            wake=context.wake,
         )
     except DelegationError as exc:
         # A refused delegation is reported to the agent as a tool error so it

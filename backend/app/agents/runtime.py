@@ -30,6 +30,7 @@ from app.agents.delegation import (
     DelegationContext,
     DelegationTimeout,
     new_root_context,
+    restore_context,
 )
 from app.agents.lifecycle import validate_transition
 from app.agents.project_context import context_prelude, ensure_exists
@@ -119,6 +120,7 @@ class AgentRuntime:
         bus: EventBus | None = None,
         delegation: DelegationContext | None = None,
         client_for: Any = None,
+        wake: Any = None,
     ) -> None:
         self.config = config
         self.session = session
@@ -133,6 +135,10 @@ class AgentRuntime:
         # How a child run gets its own model client. Without it a delegated run
         # would reuse the caller's scripted or configured client.
         self.client_for = client_for
+        # Queues a follow-up task when this agent notifies a teammate. None
+        # outside the worker (the CLI, most tests), where a notification is
+        # still delivered and recorded but wakes nobody.
+        self.wake = wake
         self.messages_bus = AgentMessageBus(session, events=bus)
         self.tool_schemas, self.tools = build_toolset(config.tools)
         self.budget = BudgetTracker(
@@ -350,6 +356,7 @@ class AgentRuntime:
             iteration=iteration,
             settings=self.settings,
             run_child=self._run_child,
+            wake=self.wake if self.settings.wake_on_notify else None,
         )
 
     async def _run_child(self, agent_key: str, child_task: Task, child_context: DelegationContext):
@@ -372,6 +379,7 @@ class AgentRuntime:
             bus=self.bus,
             delegation=child_context,
             client_for=self.client_for,
+            wake=self.wake,
         )
         return await child_runtime.run(child_task)
 
@@ -545,12 +553,26 @@ class AgentRuntime:
         # A root run starts a new tree; a delegated run inherits its caller's,
         # so the hop budget and the clock are shared rather than reset.
         if self.delegation is None:
-            self.delegation = new_root_context(
-                root_task_id=task.parent_task_id or task.id,
-                max_hops=self.settings.max_agent_hops,
-                deadline_seconds=self.settings.task_deadline_seconds,
-                agent_key=self.config.key,
-            )
+            if task.parent_task_id is None and task.attempt <= 1:
+                # A fresh root task: nothing to restore.
+                self.delegation = new_root_context(
+                    root_task_id=task.id,
+                    max_hops=self.settings.max_agent_hops,
+                    deadline_seconds=self.settings.task_deadline_seconds,
+                    agent_key=self.config.key,
+                )
+            else:
+                # A task the worker picked up without a live parent — a woken
+                # notification, or a re-queued attempt. Rebuilding from the
+                # database keeps one budget across the tree even though the
+                # in-memory context is gone.
+                self.delegation = await restore_context(
+                    self.session,
+                    task,
+                    max_hops=self.settings.max_agent_hops,
+                    deadline_seconds=self.settings.task_deadline_seconds,
+                    agent_key=self.config.key,
+                )
 
         ensure_exists(self.settings)
         messages = await self._build_conversation(task)

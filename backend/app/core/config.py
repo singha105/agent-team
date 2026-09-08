@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     task_deadline_seconds: float = Field(
         default=600.0, gt=0, alias="AGENTTEAM_TASK_DEADLINE_SECONDS"
     )
+    # Whether send_message queues a follow-up task so an idle recipient acts on
+    # it. Off makes notifications inert records, which is the Phase 3 behaviour.
+    wake_on_notify: bool = Field(default=True, alias="AGENTTEAM_WAKE_ON_NOTIFY")
 
     # --- Model request defaults -------------------------------------------
     max_response_tokens: int = Field(default=16_000, alias="AGENTTEAM_MAX_RESPONSE_TOKENS")
