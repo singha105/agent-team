@@ -160,6 +160,110 @@ async def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_preflight(args: argparse.Namespace) -> int:
+    """Verify the live API end to end with one small, real call.
+
+    Everything else in this project is tested against a scripted model or a
+    local server speaking the wire format. Those prove the request we build is
+    well formed; only a real call proves Anthropic accepts it. This makes that
+    check one command, with the cost stated before and after.
+    """
+    import anthropic
+
+    from app.agents.tools import build_toolset
+    from app.core.pricing import TokenUsage, estimate_cost_usd, rates_for
+
+    settings = get_settings()
+    try:
+        config = get_agent_config(args.agent)
+    except AgentConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    system = config.resolve_system_prompt(settings.agent_configs)
+    schemas, _ = build_toolset(config.tools)
+    request = {
+        "model": config.model,
+        "max_tokens": args.max_tokens,
+        "system": system,
+        "messages": [
+            {
+                "role": "user",
+                "content": "Reply with the single word: ready. Do not call any tool.",
+            }
+        ],
+        "tools": schemas,
+        "output_config": {"effort": "low"},
+    }
+
+    rates = rates_for(config.model)
+    approx_input = (len(system) + sum(len(str(t)) for t in schemas)) // 4
+    est = (approx_input * rates.input + args.max_tokens * rates.output) / 1_000_000
+
+    print(_rule("preflight"))
+    print(f"agent      {config.display_name} ({config.key})")
+    print(f"model      {config.model}")
+    print(f"tools      {len(schemas)} schemas: {', '.join(t['name'] for t in schemas)}")
+    print(f"effort     low   max_tokens {args.max_tokens}")
+    print(f"est. cost  under ${est:.4f} (~{approx_input:,} input tokens)")
+    print(_rule())
+
+    if args.dry_run:
+        print("dry run: nothing was sent. Drop --dry-run to make the call.")
+        return 0
+
+    try:
+        settings.require_api_key()
+    except MissingAPIKeyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    client = anthropic.AsyncAnthropic(api_key=settings.require_api_key())
+    try:
+        response = await client.messages.create(**request)
+    except anthropic.AuthenticationError:
+        print("FAILED  the API key was rejected. Check ANTHROPIC_API_KEY.", file=sys.stderr)
+        return 1
+    except anthropic.NotFoundError:
+        print(
+            f"FAILED  model {config.model!r} was not found. Check the `model` field in "
+            f"config/agents/{config.key}.yaml.",
+            file=sys.stderr,
+        )
+        return 1
+    except anthropic.BadRequestError as exc:
+        print(f"FAILED  the request was rejected: {exc.message}", file=sys.stderr)
+        print("        This is the failure the offline tests cannot catch.", file=sys.stderr)
+        return 1
+    except anthropic.APIConnectionError as exc:
+        print(f"FAILED  could not reach the API: {exc}", file=sys.stderr)
+        return 1
+    except anthropic.APIStatusError as exc:
+        print(f"FAILED  API error {exc.status_code}: {exc.message}", file=sys.stderr)
+        return 1
+    finally:
+        await client.close()
+
+    usage = TokenUsage.from_response_usage(response.usage)
+    cost = estimate_cost_usd(config.model, usage)
+    text = "".join(b.text for b in response.content if b.type == "text").strip()
+
+    print("OK   request accepted and response parsed")
+    print(f"  model returned   {response.model}")
+    print(f"  stop_reason      {response.stop_reason}")
+    print(f"  content blocks   {[b.type for b in response.content]}")
+    print(f"  reply            {text[:80]!r}")
+    print(
+        f"  usage            in {usage.input_tokens:,} / out {usage.output_tokens:,} "
+        f"(cache read {usage.cache_read_tokens:,})"
+    )
+    print(f"  actual cost      ${cost:.6f}")
+    print(_rule())
+    print("The live API path is verified: the request this project builds is accepted,")
+    print("and the response parses into the fields the budget and cost accounting read.")
+    return 0
+
+
 async def cmd_agents(_args: argparse.Namespace) -> int:
     try:
         configs = load_all_agent_configs()
@@ -192,6 +296,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     agents = sub.add_parser("agents", help="list configured agents")
     agents.set_defaults(func=cmd_agents)
+
+    preflight = sub.add_parser(
+        "preflight",
+        help="verify the live API with one small real call",
+        description=(
+            "Sends one minimal request using a real agent's model, system prompt and "
+            "tool schemas, then reports what came back. This is the only check that "
+            "proves Anthropic accepts the request this project builds."
+        ),
+    )
+    preflight.add_argument("--agent", default="backend", help="agent to test with")
+    preflight.add_argument(
+        "--max-tokens", type=int, default=32, help="response cap, kept small to bound cost"
+    )
+    preflight.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show what would be sent and the cost estimate, without calling",
+    )
+    preflight.set_defaults(func=cmd_preflight)
 
     return parser
 
