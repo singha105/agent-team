@@ -300,7 +300,13 @@ async def test_request_carries_model_prompt_and_granted_tools(session, agent, se
     call = client.calls[0]
     assert call["model"] == "claude-opus-5"
     assert call["system"] == "You are a backend engineer."
-    assert call["messages"][0] == {"role": "user", "content": "Build an endpoint"}
+    # The first message now carries the shared PROJECT.md context ahead of the
+    # task: agents must build against published decisions, and leaving them to
+    # fetch it is an instruction they skip under pressure.
+    first = call["messages"][0]
+    assert first["role"] == "user"
+    assert "Build an endpoint" in first["content"]
+    assert "PROJECT.md" in first["content"]
     assert {t["name"] for t in call["tools"]} == set(AGENT_YAML["tools"])
     assert "thinking" not in call, "thinking must be left to the model default"
     assert call["output_config"] == {"effort": settings.effort}

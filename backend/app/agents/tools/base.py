@@ -34,6 +34,11 @@ class Tool:
     description: str
     input_schema: dict[str, Any]
     handler: ToolHandler
+    # Collaboration tools need to know who is calling, on which task, under
+    # which delegation budget. Filesystem tools deliberately do not: keeping
+    # them context-free means they can be tested and reasoned about in
+    # isolation, so the dependency is opt-in rather than universal.
+    needs_context: bool = False
 
     def to_api_schema(self) -> dict[str, Any]:
         """The tool definition sent to the Messages API."""

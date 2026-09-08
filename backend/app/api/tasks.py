@@ -10,12 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.config_loader import AgentConfigError, get_agent_config
 from app.agents.lifecycle import IllegalTransitionError, validate_transition
+from app.agents.rollup import delegation_tree, tree_usage
 from app.agents.runtime import sync_agent_row
 from app.core.db import get_db
 from app.events.bus import get_event_bus
 from app.events.schemas import MessageCreated, TaskCreated, TaskStatusChanged
 from app.models import HUMAN, Agent, Message, MessageType, Task, TaskStatus, ToolCall, Usage
 from app.schemas.task import (
+    AgentSpendOut,
+    DelegationNode,
     MessageOut,
     ReviewRequest,
     TaskCreateRequest,
@@ -24,6 +27,7 @@ from app.schemas.task import (
     TaskTrace,
     ToolCallOut,
     TraceEntry,
+    TreeUsageOut,
     UsageOut,
 )
 from app.workers.queue import get_worker_pool
@@ -61,6 +65,41 @@ def _summary(task: Task, agent_key: str) -> TaskSummary:
         attempt=task.attempt,
         created_at=task.created_at,
         updated_at=task.updated_at,
+    )
+
+
+async def _tree_rollup(session: AsyncSession, task: Task) -> tuple[TreeUsageOut, list]:
+    """Usage and shape for this task's delegation tree.
+
+    Rooted at the task itself rather than at the tree's true root: asking about
+    a child should report what that child and its own descendants cost, not the
+    whole unrelated tree above it.
+    """
+    usage = await tree_usage(session, task.id)
+    nodes = await delegation_tree(session, task.id)
+    return (
+        TreeUsageOut(
+            root_task_id=usage.root_task_id,
+            task_ids=usage.task_ids,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            estimated_cost_usd=usage.estimated_cost_usd,
+            delegated_task_count=usage.delegated_task_count,
+            by_agent=[
+                AgentSpendOut(
+                    agent_key=a.agent_key,
+                    model=a.model,
+                    input_tokens=a.input_tokens,
+                    output_tokens=a.output_tokens,
+                    total_tokens=a.total_tokens,
+                    estimated_cost_usd=a.estimated_cost_usd,
+                    task_count=a.task_count,
+                )
+                for a in usage.by_agent
+            ],
+        ),
+        [DelegationNode(**n) for n in nodes],
     )
 
 
@@ -159,8 +198,12 @@ async def get_task(task_id: int, session: AsyncSession = Depends(get_db)) -> Tas
         .all()
     )
 
+    tree, delegation = await _tree_rollup(session, task)
+
     return TaskDetail(
         **_summary(task, agent_key).model_dump(),
+        tree=tree,
+        delegation=delegation,
         messages=[MessageOut.model_validate(m) for m in messages],
         tool_calls=[ToolCallOut.model_validate(c) for c in tool_calls],
         usage=[UsageOut.model_validate(u) for u in usage_rows],
@@ -245,12 +288,16 @@ async def get_trace(task_id: int, session: AsyncSession = Depends(get_db)) -> Ta
     # instant and would otherwise come back in arbitrary order.
     entries.sort(key=lambda e: (e.at, e.ref_id))
 
+    tree, delegation = await _tree_rollup(session, task)
+
     return TaskTrace(
         task_id=task.id,
         status=task.status,
         agent_key=agent_key,
         attempt=task.attempt,
         entries=entries,
+        tree=tree,
+        delegation=delegation,
         total_cost_usd=round(sum(u.estimated_cost_usd for u in usage_rows), 6),
         total_tokens=sum(
             u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_creation_tokens

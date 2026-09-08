@@ -103,12 +103,53 @@ class TaskSummary(BaseModel):
     updated_at: datetime
 
 
+class AgentSpendOut(BaseModel):
+    agent_key: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated_cost_usd: float
+    task_count: int
+
+
+class TreeUsageOut(BaseModel):
+    """Spend for a task and everything it delegated.
+
+    Reporting only a task's own usage understates the work by however much the
+    delegation cost, which — since children delegate further — can be most of it.
+    """
+
+    root_task_id: int
+    task_ids: list[int]
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated_cost_usd: float
+    delegated_task_count: int
+    by_agent: list[AgentSpendOut] = Field(default_factory=list)
+
+
+class DelegationNode(BaseModel):
+    task_id: int
+    parent_task_id: int | None
+    depth: int
+    title: str
+    status: str
+    created_by: str
+    agent_key: str
+
+
 class TaskDetail(TaskSummary):
     messages: list[MessageOut] = Field(default_factory=list)
     tool_calls: list[ToolCallOut] = Field(default_factory=list)
     usage: list[UsageOut] = Field(default_factory=list)
+    # This task alone.
     total_cost_usd: float = 0.0
     total_tokens: int = 0
+    # This task plus everything it delegated.
+    tree: TreeUsageOut | None = None
+    delegation: list[DelegationNode] = Field(default_factory=list)
 
 
 class TraceEntry(BaseModel):
@@ -130,3 +171,5 @@ class TaskTrace(BaseModel):
     entries: list[TraceEntry]
     total_cost_usd: float
     total_tokens: int
+    tree: TreeUsageOut | None = None
+    delegation: list[DelegationNode] = Field(default_factory=list)

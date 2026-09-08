@@ -24,10 +24,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.budget import BudgetExceeded, BudgetTracker
+from app.agents.bus import AgentMessageBus
 from app.agents.config_loader import AgentConfig, get_agent_config
+from app.agents.delegation import (
+    DelegationContext,
+    DelegationTimeout,
+    new_root_context,
+)
 from app.agents.lifecycle import validate_transition
+from app.agents.project_context import context_prelude, ensure_exists
 from app.agents.tools import build_toolset
 from app.agents.tools.base import Tool, ToolOutcome
+from app.agents.tools.collaboration import ToolContext
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.core.pricing import TokenUsage, UnknownModelError, estimate_cost_usd, rates_for
@@ -109,6 +117,8 @@ class AgentRuntime:
         settings: Settings | None = None,
         client: anthropic.AsyncAnthropic | None = None,
         bus: EventBus | None = None,
+        delegation: DelegationContext | None = None,
+        client_for: Any = None,
     ) -> None:
         self.config = config
         self.session = session
@@ -118,6 +128,12 @@ class AgentRuntime:
         # do not care about streaming.
         self.bus = bus
         self._agent_status = AgentStatus.IDLE
+        # None on a root run; a child run inherits its parent's tree.
+        self.delegation = delegation
+        # How a child run gets its own model client. Without it a delegated run
+        # would reuse the caller's scripted or configured client.
+        self.client_for = client_for
+        self.messages_bus = AgentMessageBus(session, events=bus)
         self.tool_schemas, self.tools = build_toolset(config.tools)
         self.budget = BudgetTracker(
             max_iterations=config.max_iterations or self.settings.max_iterations,
@@ -151,7 +167,13 @@ class AgentRuntime:
         that picks up attempt 2 is not the process that ran attempt 1.
         """
         if task.attempt <= 1:
-            return [{"role": "user", "content": task.description}]
+            prelude = context_prelude(self.settings)
+            return [
+                {
+                    "role": "user",
+                    "content": f"{prelude}\n\n---\n\n## Your task\n\n{task.description}",
+                }
+            ]
 
         rows = (
             (
@@ -319,9 +341,48 @@ class AgentRuntime:
 
     # -- tool execution ----------------------------------------------------
 
-    async def _invoke_tool(self, block: Any) -> tuple[ToolOutcome, int]:
-        """Run one tool handler. Touches no session state, so a batch of these
-        is safe to run concurrently."""
+    def _tool_context(self, task: Task, iteration: int) -> ToolContext:
+        return ToolContext(
+            agent_key=self.config.key,
+            task=task,
+            delegation=self.delegation,
+            bus=self.messages_bus,
+            iteration=iteration,
+            settings=self.settings,
+            run_child=self._run_child,
+        )
+
+    async def _run_child(self, agent_key: str, child_task: Task, child_context: DelegationContext):
+        """Run a delegated task to completion and return its result.
+
+        Executed inline rather than handed to the worker queue. The caller is
+        blocked either way, and queuing would risk a deadlock: the target's lane
+        may already be occupied by a task that is itself waiting on this one.
+
+        The child shares the caller's session — the two runs are strictly
+        sequential, so there is no concurrent-flush hazard, and sharing means the
+        child's rows land in the same trace without a second connection.
+        """
+        child_config = get_agent_config(agent_key)
+        child_runtime = AgentRuntime(
+            child_config,
+            self.session,
+            self.settings,
+            client=self.client_for(agent_key) if self.client_for else None,
+            bus=self.bus,
+            delegation=child_context,
+            client_for=self.client_for,
+        )
+        return await child_runtime.run(child_task)
+
+    async def _invoke_tool(
+        self, block: Any, context: ToolContext | None = None
+    ) -> tuple[ToolOutcome, int]:
+        """Run one tool handler.
+
+        Filesystem tools touch no session state and are safe to run
+        concurrently. Collaboration tools do touch it, so the caller runs
+        those one at a time."""
         name = block.name
         # Inputs are already parsed dicts from the SDK; never string-match the
         # serialized form, which varies in escaping between models.
@@ -340,7 +401,10 @@ class AgentRuntime:
             )
         else:
             try:
-                outcome = await tool.handler(**arguments)
+                if tool.needs_context:
+                    outcome = await tool.handler(context, **arguments)
+                else:
+                    outcome = await tool.handler(**arguments)
             except TypeError as exc:
                 outcome = ToolOutcome(
                     content=f"Invalid arguments for {name}: {exc}",
@@ -357,7 +421,9 @@ class AgentRuntime:
 
         return outcome, int((time.perf_counter() - started) * 1000)
 
-    async def _run_tool_batch(self, task_id: int, blocks: list[Any]) -> list[dict[str, Any]]:
+    async def _run_tool_batch(
+        self, task_id: int, blocks: list[Any], context: ToolContext | None = None
+    ) -> list[dict[str, Any]]:
         """Execute one turn's tool calls and return their tool_result blocks.
 
         Three phases, because an AsyncSession is not concurrency-safe: rows are
@@ -393,7 +459,16 @@ class AgentRuntime:
                 )
             )
 
-        outcomes = await asyncio.gather(*(self._invoke_tool(b) for b in blocks))
+        # Collaboration tools write to the session and can start a nested run;
+        # an AsyncSession is not concurrency-safe, so a batch containing one is
+        # executed in order. Pure filesystem batches still run concurrently.
+        uses_session = any(
+            (tool := self.tools.get(b.name)) is not None and tool.needs_context for b in blocks
+        )
+        if uses_session:
+            outcomes = [await self._invoke_tool(b, context) for b in blocks]
+        else:
+            outcomes = await asyncio.gather(*(self._invoke_tool(b, context) for b in blocks))
 
         results: list[dict[str, Any]] = []
         for block, record, (outcome, duration_ms) in zip(blocks, records, outcomes, strict=True):
@@ -466,6 +541,18 @@ class AgentRuntime:
     async def run(self, task: Task) -> RunResult:
         """Run the tool-use loop until a final response or a budget trip."""
         system = self.config.resolve_system_prompt(self.settings.agent_configs)
+
+        # A root run starts a new tree; a delegated run inherits its caller's,
+        # so the hop budget and the clock are shared rather than reset.
+        if self.delegation is None:
+            self.delegation = new_root_context(
+                root_task_id=task.parent_task_id or task.id,
+                max_hops=self.settings.max_agent_hops,
+                deadline_seconds=self.settings.task_deadline_seconds,
+                agent_key=self.config.key,
+            )
+
+        ensure_exists(self.settings)
         messages = await self._build_conversation(task)
 
         # Pre-flight: a model with no rate entry cannot be costed, and finding
@@ -491,6 +578,10 @@ class AgentRuntime:
         try:
             while True:
                 self.budget.check_before_iteration()
+                # One clock for the whole tree. Checked here as well as at each
+                # delegation, so a single agent looping on its own tools is
+                # bounded too.
+                self.delegation.check_deadline()
                 iteration = self.budget.record_iteration()
 
                 log.info(
@@ -585,7 +676,9 @@ class AgentRuntime:
                 # back in ONE user message; splitting them teaches the model to
                 # stop calling tools in parallel.
                 await self.set_agent_status(AgentStatus.WORKING, task.id)
-                results = await self._run_tool_batch(task.id, tool_uses)
+                results = await self._run_tool_batch(
+                    task.id, tool_uses, self._tool_context(task, iteration)
+                )
 
                 await self._persist_message(
                     task.id,
@@ -598,6 +691,11 @@ class AgentRuntime:
                 )
                 messages.append({"role": "user", "content": results})
 
+        except DelegationTimeout as exc:
+            log.warning("[%s] %s", self.config.key, exc)
+            await self._set_status(task, TaskStatus.BUDGET_EXCEEDED, str(exc))
+            await self.set_agent_status(AgentStatus.BLOCKED, task.id)
+            return self._result(task, TaskStatus.BUDGET_EXCEEDED, final_text, str(exc))
         except BudgetExceeded as exc:
             log.warning("[%s] %s", self.config.key, exc)
             await self._set_status(task, TaskStatus.BUDGET_EXCEEDED, str(exc))

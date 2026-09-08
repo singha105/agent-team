@@ -14,7 +14,22 @@ from app.agents.tools.shell import run_command
 
 
 def test_every_expected_tool_is_registered() -> None:
-    assert registered_names() == ["list_files", "read_file", "run_command", "write_file"]
+    assert registered_names() == [
+        "append_project_context",
+        "ask_agent",
+        "list_files",
+        "read_file",
+        "run_command",
+        "send_message",
+        "write_file",
+    ]
+
+
+def test_only_collaboration_tools_need_context() -> None:
+    """Filesystem tools stay context-free so they remain testable in isolation
+    and safe to run concurrently."""
+    needs = {n for n in registered_names() if get_tool(n).needs_context}
+    assert needs == {"send_message", "ask_agent", "append_project_context"}
 
 
 def test_api_schemas_are_well_formed() -> None:

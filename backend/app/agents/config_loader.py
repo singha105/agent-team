@@ -17,7 +17,18 @@ from app.core.config import get_settings
 
 # Tool names the runtime can actually wire up. A config granting anything else
 # is a typo, and failing loudly here beats a silent no-op at runtime.
-KNOWN_TOOLS = frozenset({"read_file", "write_file", "list_files", "run_command"})
+KNOWN_TOOLS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "list_files",
+        "run_command",
+        # Phase 3 collaboration tools.
+        "send_message",
+        "ask_agent",
+        "append_project_context",
+    }
+)
 
 
 class AgentConfigError(ValueError):

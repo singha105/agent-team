@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     max_iterations: int = Field(default=25, alias="AGENTTEAM_MAX_ITERATIONS")
     max_tokens_per_task: int = Field(default=500_000, alias="AGENTTEAM_MAX_TOKENS_PER_TASK")
     max_agent_hops: int = Field(default=10, alias="AGENTTEAM_MAX_AGENT_HOPS")
+    # One wall clock for an entire delegation tree. Per-run timeouts multiply:
+    # ten nested runs at 60s each is a ten-minute stall, not a one-minute one.
+    task_deadline_seconds: float = Field(
+        default=600.0, gt=0, alias="AGENTTEAM_TASK_DEADLINE_SECONDS"
+    )
 
     # --- Model request defaults -------------------------------------------
     max_response_tokens: int = Field(default=16_000, alias="AGENTTEAM_MAX_RESPONSE_TOKENS")
