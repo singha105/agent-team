@@ -9,8 +9,9 @@ reconstructed exactly.
 
 ## Status
 
-**Phase 2 of 5 — full roster, task lifecycle, live streaming.** No UI yet. All four agents run
-independently over HTTP, in the background, with every step streaming over a WebSocket.
+**Phase 3 of 5 — inter-agent collaboration.** No UI yet. Agents delegate to each other
+without you: assign one task to Backend and it asks the Database agent for a schema,
+gets it, and builds against it.
 
 | Agent | Name | Model | Owns |
 |---|---|---|---|
@@ -79,6 +80,49 @@ python scripts/export_types.py
 ```
 
 CI fails if the committed `frontend/src/lib/events.ts` drifts from the backend.
+
+## Collaboration
+
+Agents have three tools beyond the filesystem:
+
+| Tool | Blocking | Effect |
+|---|---|---|
+| `ask_agent` | yes | Creates a child task, runs it, returns the answer as the tool result |
+| `send_message` | no | A one-way note, persisted, nothing waits |
+| `append_project_context` | no | Publishes a decision to `workspace/PROJECT.md` |
+
+`PROJECT.md` is the team's shared context — the schema, the API contract, the
+conventions. Every agent is given its contents at the start of a task and can add to
+it. It is **append-only, enforced in code**: `write_file` refuses the path too, since
+an enforcement a neighbouring tool can bypass is not an enforcement.
+
+### Handoff order
+
+Database publishes the schema → Backend builds on it and publishes the API contract →
+Frontend consumes that contract → DevOps reads both. Each agent is told to check
+`PROJECT.md` for what it depends on and to ask the owner if something is missing,
+rather than inventing it. Handoffs reference **roles, not agent names**, so swapping
+the roster does not break the prompts.
+
+### Loop protection
+
+Three limits, all shared by a whole delegation tree rather than per run:
+
+- **Hops** (`AGENTTEAM_MAX_AGENT_HOPS`, default 10) — one budget for the tree, so a
+  child cannot reset what its parent was already spending.
+- **Cycles** — a target already waiting in the chain is refused, catching A→B→A one
+  hop before it becomes an A↔B ping-pong.
+- **Wall clock** (`AGENTTEAM_TASK_DEADLINE_SECONDS`, default 600) — one clock for the
+  tree. Per-run timeouts multiply: ten nested runs at 60s each is ten minutes.
+
+A refusal reaches the agent as a tool error it can work around, not an exception that
+kills the run.
+
+### Cost attribution
+
+`GET /api/tasks/{id}` and `/trace` report the task's own spend **and** a `tree`
+rollup covering every delegated child, broken down per agent and per model. Reporting
+only the root understates the work by whatever the delegation cost.
 
 ## Running an agent
 

@@ -189,3 +189,79 @@ that had no review step; marking them as awaiting review would invent work that 
 - **The React UI** — Phase 4.
 - **Inter-agent messaging.** `agent_to_agent`, `parent_task_id` and the hop counter all exist and
   are still unused; agents describe handoffs in prose but cannot yet dispatch to each other.
+
+---
+
+## Phase 3 — Inter-agent communication
+
+**Goal:** agents collaborate without the manager.
+
+### Built
+
+| Area | Detail |
+|---|---|
+| Message bus | `agents/bus.py` — routes, persists both directions, enforces limits |
+| Delegation | `agents/delegation.py` — tree-wide hop budget, agent chain, one clock |
+| Tools | `ask_agent` (blocking, creates a child task), `send_message`, `append_project_context` |
+| Shared context | `workspace/PROJECT.md`, append-only, enforced in code |
+| Handoffs | Encoded in all four prompts, by role rather than by agent name |
+| Rollup | `agents/rollup.py` — recursive CTE; cost per agent and per model |
+| Tests | 288 passing |
+
+### Decisions
+
+**`ask_agent` runs the child inline, not through the worker queue.** The caller is
+blocked either way, and queuing risks a deadlock: the target's lane may already hold a
+task that is itself waiting on this one. The child shares the caller's session — the runs
+are strictly sequential, so there is no concurrent-flush hazard.
+
+**Limits belong to the tree, not the run.** A per-run hop counter lets every child reset
+the budget, and per-run timeouts multiply. Both are shared by reference so a child cannot
+widen a limit its parent was already bound by.
+
+**Cycle detection refuses a target already in the chain.** That catches A→B→A one hop
+before it becomes a ping-pong, and it is the same condition that prevents a deadlock —
+the target is literally blocked waiting on its caller. It deliberately does *not* block
+asking the same teammate from two separate branches, which is legitimate fan-out.
+
+**A refused delegation is a tool error, not an exception.** The agent has to be able to
+see the refusal and finish without the answer.
+
+**Notifications cost a hop too.** Letting them be free would be an easy way to spam the
+team past any limit.
+
+**`write_file` refuses `PROJECT.md`.** An append-only rule a neighbouring tool can bypass
+is not a rule. Checked on the resolved path, so `./PROJECT.md` and `a/../PROJECT.md`
+cannot slip past it.
+
+**The shared context is injected, not fetched.** "Read PROJECT.md first" is an instruction
+agents skip under pressure, and the entire point is that they build on published
+decisions rather than invented ones.
+
+### Bugs found and fixed
+
+1. **Delegated runs used the caller's model client**, so a Database child would have been
+   configured and billed as the Backend agent. Caught by driving the exit criterion
+   through the real router and worker instead of the runtime directly.
+2. **A batch containing a collaboration tool ran concurrently.** Those tools write to the
+   session and can start a nested run; an `AsyncSession` is not concurrency-safe. Such a
+   batch now executes in order, while pure filesystem batches still run concurrently.
+3. **`time.sleep` inside an async test** would have stalled the runtime under test as well
+   as the loop.
+
+### Verified
+
+One task — "Build a REST API for a book library with search" — assigned to Backend only,
+over real HTTP with a real WebSocket client. Backend asked the Database agent for a
+schema, received it as a tool result, built `api/books.py` against it, published the API
+contract, and notified the UI agent. Both agents' decisions landed in `PROJECT.md`. Cost
+rolled up from $0.1562 (root alone) to $0.1719 (tree), with the child correctly priced at
+Sonnet rates rather than the caller's Opus rates.
+
+### Deferred
+
+- **The live API call is still unverified** — no credentials on this machine.
+- **The React UI** — Phase 4.
+- **Agents cannot yet start work on a notification.** `send_message` is persisted and
+  visible in the trace, but the recipient only sees it when its next task begins; nothing
+  wakes an idle agent.
