@@ -148,5 +148,38 @@ def test_shipped_backend_config_is_valid() -> None:
     config = load_agent_config("backend", Path(__file__).resolve().parents[2] / "config/agents")
     assert config.key == "backend"
     assert config.model == "claude-opus-5"
-    assert set(config.tools) == {"read_file", "write_file", "list_files", "run_command"}
+    assert set(config.tools) == {
+        "read_file",
+        "write_file",
+        "list_files",
+        "run_command",
+        "send_message",
+        "ask_agent",
+        "append_project_context",
+    }
     assert config.resolve_system_prompt(Path("config/agents")).strip()
+
+
+def test_every_shipped_agent_encodes_the_handoff_protocol() -> None:
+    """Phase 3 requires each prompt to state its dependencies and to say that a
+    missing one is asked for, not invented."""
+    from app.agents.config_loader import load_all_agent_configs
+
+    directory = Path(__file__).resolve().parents[2] / "config/agents"
+    configs = load_all_agent_configs(directory)
+    assert set(configs) == {"backend", "database", "devops", "frontend"}
+
+    for key, config in configs.items():
+        prompt = config.resolve_system_prompt(directory)
+        assert "PROJECT.md" in prompt, f"{key} never mentions the shared context"
+        assert "ask_agent" in prompt, f"{key} is not told how to ask a teammate"
+        assert "append_project_context" in prompt, f"{key} is not told how to publish"
+        assert config.does_not_own, f"{key} has no stated lane boundary"
+        assert config.hands_off_to, f"{key} has no handoff targets"
+        # Handoffs are keyed by role so a roster swap does not break the prompts.
+        for other in configs:
+            if other != key:
+                assert configs[other].display_name not in prompt, (
+                    f"{key} names {configs[other].display_name} directly; "
+                    "handoffs must reference roles, not agent names"
+                )
