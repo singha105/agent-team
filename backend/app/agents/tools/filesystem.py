@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.agents.project_context import PROJECT_FILE, is_project_file
 from app.agents.sandbox import SandboxViolation, resolve_in_workspace, to_workspace_relative
 from app.agents.tools.base import Tool, ToolOutcome, register
 from app.core.config import get_settings
@@ -52,6 +53,20 @@ async def write_file(path: str, content: str) -> ToolOutcome:
         target = resolve_in_workspace(path)
     except SandboxViolation as exc:
         return ToolOutcome(content=f"Denied: {exc}", payload={"path": path}, is_error=True)
+
+    # The shared context is append-only, and an enforcement a neighbouring tool
+    # can bypass is not an enforcement. Checked on the resolved path so
+    # './PROJECT.md' and 'a/../PROJECT.md' cannot slip past it.
+    if is_project_file(path):
+        return ToolOutcome(
+            content=(
+                f"Denied: {PROJECT_FILE} is append-only shared context and cannot be "
+                "overwritten — it holds decisions the rest of the team is building "
+                "against. Use append_project_context to add to it."
+            ),
+            payload={"path": path, "append_only": True},
+            is_error=True,
+        )
 
     if target.is_dir():
         return ToolOutcome(
