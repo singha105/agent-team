@@ -13,6 +13,7 @@ import { create } from "zustand";
 import { api, type AgentSummary, type TaskDetail, type TaskSummary } from "../lib/api";
 import type { AgentTeamEvent } from "../lib/events";
 import { EventStream, type ConnectionState } from "../lib/ws";
+import { DemoStream, demoApi, isDemo } from "../demo/replay";
 import {
   initialRoomState,
   reduceEvent,
@@ -52,6 +53,11 @@ interface TeamState extends RoomState {
 }
 
 let stream: EventStream | null = null;
+let demoStream: DemoStream | null = null;
+
+// In demo mode every network call is answered from the recording, so the
+// store below needs no branching beyond this one swap.
+const client = isDemo ? { ...api, ...demoApi } : api;
 
 export const useTeamStore = create<TeamState>((set, get) => ({
   ...initialRoomState,
@@ -83,7 +89,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
 
   refreshRoster: async () => {
     try {
-      const roster = await api.listAgents();
+      const roster = await client.listAgents();
       set((state) => ({
         roster,
         error: null,
@@ -111,7 +117,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
 
   refreshTasks: async () => {
     try {
-      const taskList = await api.listTasks({ limit: 200 });
+      const taskList = await client.listTasks({ limit: 200 });
       set((state) => ({
         taskList,
         error: null,
@@ -141,7 +147,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
 
   loadTask: async (id) => {
     try {
-      const detail = await api.getTask(id);
+      const detail = await client.getTask(id);
       set((state) => ({ taskDetail: { ...state.taskDetail, [id]: detail } }));
     } catch (error) {
       set({ error: error instanceof Error ? error.message : `could not load task ${id}` });
@@ -150,7 +156,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
 
   assignTask: async (agentKey, description) => {
     try {
-      const task = await api.createTask({ agent_key: agentKey, description });
+      const task = await client.createTask({ agent_key: agentKey, description });
       await get().refreshTasks();
       return task;
     } catch (error) {
@@ -161,7 +167,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
 
   reviewTask: async (id, decision, feedback) => {
     try {
-      await api.review(id, { decision, feedback });
+      await client.review(id, { decision, feedback });
       await Promise.all([get().refreshTasks(), get().loadTask(id)]);
     } catch (error) {
       set({ error: error instanceof Error ? error.message : "could not submit the review" });
@@ -175,6 +181,15 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   },
 
   connect: () => {
+    if (isDemo) {
+      if (demoStream) return;
+      demoStream = new DemoStream(
+        (event) => get().applyEvent(event),
+        () => get().setConnection("open"),
+      );
+      demoStream.start();
+      return;
+    }
     if (stream) return;
     stream = new EventStream({
       onEvent: (event) => get().applyEvent(event),
@@ -184,6 +199,8 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   },
 
   disconnect: () => {
+    demoStream?.stop();
+    demoStream = null;
     stream?.close();
     stream = null;
   },

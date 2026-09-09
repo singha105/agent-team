@@ -14,6 +14,7 @@ import { ConnectionPill } from "./components/ConnectionPill";
 import { CostMeter } from "./components/CostMeter";
 import { AgentPanel } from "./components/AgentPanel";
 import { BubbleDialog } from "./components/BubbleDialog";
+import { DemoBanner } from "./demo/DemoBanner";
 import { TaskBoard } from "./scenes/TaskBoard";
 import { TeamRoom } from "./scenes/TeamRoom";
 import { useTeamStore } from "./store/useTeamStore";
@@ -113,6 +114,7 @@ export function App() {
 
       <AgentPanel />
       <BubbleDialog />
+      <DemoBanner />
     </div>
   );
 }

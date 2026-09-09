@@ -56,12 +56,22 @@ docker compose up --build
 
 Open **http://localhost:8080**.
 
-**No API key?** The whole app runs against a scripted team — real backend, real
-worker pool, real delegation, real trace, only the model is scripted:
+**No API key? Node is all you need.** `npm run demo` replays a recording of a real
+run — the actual event stream and the actual REST responses — with no backend at all:
+
+```bash
+cd frontend && npm install && npm run demo    # → localhost:5173
+```
+
+Watch the agents delegate, the bubbles cross the room and the cost meter climb.
+Assigning and reviewing are disabled, and the app says so.
+
+**Want a live backend without a key?** A scripted team, but everything else real —
+real worker pool, real delegation, real sandbox, real trace:
 
 ```bash
 python scripts/demo_server.py --seed          # terminal 1
-cd frontend && npm install && npm run dev     # terminal 2  →  localhost:5173
+cd frontend && npm run dev                    # terminal 2
 ```
 
 **From the terminal instead:**
