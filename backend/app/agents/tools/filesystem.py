@@ -2,21 +2,40 @@
 
 from __future__ import annotations
 
+from app.agents.current_agent import current_agent
 from app.agents.project_context import PROJECT_FILE, is_project_file
 from app.agents.sandbox import SandboxViolation, resolve_in_workspace, to_workspace_relative
 from app.agents.tools.base import Tool, ToolOutcome, register
+from app.agents.workspace_locks import get_workspace_locks
 from app.core.config import get_settings
 
 MAX_READ_BYTES = 256_000
 MAX_LISTING_ENTRIES = 500
 
 
-async def read_file(path: str) -> ToolOutcome:
+async def read_file(path: str, offset: int = 0, limit: int = 0) -> ToolOutcome:
+    """Read a file, optionally a window of it.
+
+    A file over the read limit used to be refused outright, which left the agent
+    with no way to see any of it — the limit protected the context window by
+    making the file unreadable. `offset` and `limit` turn that into a window the
+    agent can move, so a 40,000-line log is usable a screen at a time.
+
+    A truncated result always names the exact next call to make. An agent told
+    only that output was cut has to guess how to continue, and guessing costs an
+    iteration.
+    """
     try:
         target = resolve_in_workspace(path)
     except SandboxViolation as exc:
         return ToolOutcome(content=f"Denied: {exc}", payload={"path": path}, is_error=True)
 
+    if offset < 0 or limit < 0:
+        return ToolOutcome(
+            content="offset and limit must not be negative.",
+            payload={"path": path},
+            is_error=True,
+        )
     if not target.exists():
         return ToolOutcome(content=f"No such file: {path}", payload={"path": path}, is_error=True)
     if target.is_dir():
@@ -27,13 +46,6 @@ async def read_file(path: str) -> ToolOutcome:
         )
 
     size = target.stat().st_size
-    if size > MAX_READ_BYTES:
-        return ToolOutcome(
-            content=f"{path} is {size} bytes, over the {MAX_READ_BYTES} byte read limit.",
-            payload={"path": path, "size": size},
-            is_error=True,
-        )
-
     try:
         text = target.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -45,7 +57,59 @@ async def read_file(path: str) -> ToolOutcome:
     except OSError as exc:
         return ToolOutcome(content=f"Could not read {path}: {exc}", is_error=True)
 
-    return ToolOutcome(content=text, payload={"path": path, "bytes": size})
+    lines = text.splitlines()
+    total = len(lines)
+
+    # A plain read returns the file verbatim. Reassembling it from splitlines()
+    # drops a trailing newline, and an agent that reads a file, edits it and
+    # writes it back would silently strip it every time — which shows up as a
+    # spurious diff on every file it touches.
+    if offset == 0 and limit == 0 and len(text) <= MAX_READ_BYTES:
+        return ToolOutcome(
+            content=text,
+            payload={
+                "path": path,
+                "bytes": size,
+                "lines": total,
+                "offset": 0,
+                "returned_lines": total,
+                "truncated": False,
+            },
+        )
+
+    if total and offset >= total:
+        return ToolOutcome(
+            content=f"{path} has {total} lines; offset {offset} is past the end.",
+            payload={"path": path, "lines": total},
+            is_error=True,
+        )
+
+    end_line = total if limit == 0 else min(total, offset + limit)
+    body = "\n".join(lines[offset:end_line])
+
+    clipped_by_bytes = len(body) > MAX_READ_BYTES
+    if clipped_by_bytes:
+        body = body[:MAX_READ_BYTES]
+        end_line = offset + body.count("\n") + 1
+
+    if clipped_by_bytes or end_line < total:
+        body += (
+            f"\n\n… truncated. Showing lines {offset + 1}-{end_line} of {total}. "
+            f"Continue with read_file(path={path!r}, offset={end_line}, "
+            f"limit={limit or 400})."
+        )
+
+    return ToolOutcome(
+        content=body,
+        payload={
+            "path": path,
+            "bytes": size,
+            "lines": total,
+            "offset": offset,
+            "returned_lines": end_line - offset,
+            "truncated": clipped_by_bytes or end_line < total,
+        },
+    )
 
 
 async def write_file(path: str, content: str) -> ToolOutcome:
@@ -73,18 +137,46 @@ async def write_file(path: str, content: str) -> ToolOutcome:
             content=f"{path} is an existing directory.", payload={"path": path}, is_error=True
         )
 
+    # Serialised per path. Agents run concurrently, and two writing the same
+    # file is the one way a run destroys work rather than merely failing. The
+    # write and the bookkeeping happen under the same lock, so the check for
+    # "who wrote this last" cannot interleave with another writer's.
+    locks = get_workspace_locks()
+    lock = await locks.acquire(target)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         existed = target.exists()
         target.write_text(content, encoding="utf-8")
+        conflict = locks.record_write(target, current_agent(), content)
     except OSError as exc:
         return ToolOutcome(content=f"Could not write {path}: {exc}", is_error=True)
+    finally:
+        lock.release()
 
     verb = "Overwrote" if existed else "Created"
     written = len(content.encode("utf-8"))
+    detail = f"{verb} {path} ({written} bytes)."
+
+    if conflict is not None:
+        # The write succeeded but replaced a different agent's content. Saying
+        # so is the point: a conflict resolved invisibly is one you discover in
+        # code review, long after the run looked successful.
+        when = "at the same moment" if conflict.raced else f"{conflict.seconds_since:.0f}s earlier"
+        detail += (
+            f" Warning: {conflict.replaced_writer} wrote this file {when} and your write "
+            f"has replaced their content. If you needed theirs, read the file and merge "
+            f"rather than overwriting again."
+        )
+
     return ToolOutcome(
-        content=f"{verb} {path} ({written} bytes).",
-        payload={"path": path, "bytes": written, "overwrote": existed},
+        content=detail,
+        payload={
+            "path": path,
+            "bytes": written,
+            "overwrote": existed,
+            "conflict": conflict is not None,
+            "replaced_writer": conflict.replaced_writer if conflict else None,
+        },
     )
 
 
@@ -141,7 +233,9 @@ register(
         name="read_file",
         description=(
             "Read a UTF-8 text file from the workspace. The path is relative to the "
-            "workspace root. Read a file before you modify it."
+            "workspace root. Read a file before you modify it.\n\n"
+            "If the result is truncated it tells you the exact next call to make: page "
+            "through a large file with offset and limit."
         ),
         input_schema={
             "type": "object",
@@ -149,7 +243,20 @@ register(
                 "path": {
                     "type": "string",
                     "description": "Path relative to the workspace root, e.g. 'api/main.py'.",
-                }
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": (
+                        "First line to return, zero-based. Use with limit to page through "
+                        "a file too large to read in one call."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Lines to return. 0 reads to the end of the file.",
+                },
             },
             "required": ["path"],
         },

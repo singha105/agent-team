@@ -9,7 +9,7 @@ import pytest
 
 from app.agents.tools import build_toolset, registered_names
 from app.agents.tools.base import get_tool
-from app.agents.tools.filesystem import MAX_READ_BYTES, list_files, read_file, write_file
+from app.agents.tools.filesystem import list_files, read_file, write_file
 from app.agents.tools.shell import run_command
 
 
@@ -76,11 +76,45 @@ async def test_read_file_rejects_escape(settings) -> None:
     assert "Denied" in outcome.content
 
 
-async def test_read_file_rejects_oversized_file(settings, workspace: Path) -> None:
-    (workspace / "big.txt").write_text("x" * (MAX_READ_BYTES + 1))
+async def test_read_file_truncates_rather_than_refusing_a_large_file(
+    settings, workspace: Path
+) -> None:
+    """Refusing outright left the agent unable to see any of the file. It now
+    truncates and names the exact next call, so a large file stays usable."""
+    (workspace / "big.txt").write_text("\n".join(f"line {i}" for i in range(40_000)))
+
     outcome = await read_file("big.txt")
+
+    assert not outcome.is_error
+    assert outcome.payload["truncated"] is True
+    assert "read_file(" in outcome.content, "truncation must name the next call"
+    assert "offset=" in outcome.content
+
+
+async def test_read_file_pages_through_a_large_file(settings, workspace: Path) -> None:
+    (workspace / "big.txt").write_text("\n".join(f"line {i}" for i in range(1_000)))
+
+    first = await read_file("big.txt", offset=0, limit=3)
+    assert first.payload["returned_lines"] == 3
+    assert first.content.startswith("line 0")
+
+    second = await read_file("big.txt", offset=3, limit=3)
+    assert second.content.startswith("line 3")
+
+
+async def test_read_file_rejects_an_offset_past_the_end(settings, workspace: Path) -> None:
+    (workspace / "small.txt").write_text("a\nb\nc")
+    outcome = await read_file("small.txt", offset=99)
     assert outcome.is_error
-    assert "read limit" in outcome.content
+    assert "past the end" in outcome.content
+
+
+async def test_read_file_preserves_a_trailing_newline(settings, workspace: Path) -> None:
+    """An agent that reads, edits and writes back must not strip it — that shows
+    up as a spurious diff on every file it touches."""
+    (workspace / "code.py").write_text("x = 1\n")
+    outcome = await read_file("code.py")
+    assert outcome.content == "x = 1\n"
 
 
 async def test_read_file_rejects_binary(settings, workspace: Path) -> None:

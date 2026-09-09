@@ -73,6 +73,11 @@ class Settings(BaseSettings):
 
     # --- Model request defaults -------------------------------------------
     max_response_tokens: int = Field(default=16_000, alias="AGENTTEAM_MAX_RESPONSE_TOKENS")
+    # Retries for 429 and 5xx. The SDK does exponential backoff with jitter
+    # itself, so this raises its cap rather than reimplementing it — a hand
+    # rolled loop on top would compound the two and multiply the wall time.
+    api_max_retries: int = Field(default=5, ge=0, le=10, alias="AGENTTEAM_API_MAX_RETRIES")
+    api_timeout_seconds: float = Field(default=180.0, gt=0, alias="AGENTTEAM_API_TIMEOUT_SECONDS")
     effort: str = Field(default="high", alias="AGENTTEAM_EFFORT")
 
     # --- Logging -----------------------------------------------------------

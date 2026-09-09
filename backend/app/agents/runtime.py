@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.budget import BudgetExceeded, BudgetTracker
 from app.agents.bus import AgentMessageBus
 from app.agents.config_loader import AgentConfig, get_agent_config
+from app.agents.current_agent import set_current_agent
 from app.agents.delegation import (
     DelegationContext,
     DelegationTimeout,
@@ -37,6 +38,7 @@ from app.agents.project_context import context_prelude, ensure_exists
 from app.agents.tools import build_toolset
 from app.agents.tools.base import Tool, ToolOutcome
 from app.agents.tools.collaboration import ToolContext
+from app.agents.tools.validation import ArgumentError, validate_arguments
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.core.pricing import TokenUsage, UnknownModelError, estimate_cost_usd, rates_for
@@ -187,7 +189,14 @@ class AgentRuntime:
     @property
     def client(self) -> anthropic.AsyncAnthropic:
         if self._client is None:
-            self._client = anthropic.AsyncAnthropic(api_key=self.settings.require_api_key())
+            self._client = anthropic.AsyncAnthropic(
+                api_key=self.settings.require_api_key(),
+                # 429s and overloads are routine under a team of agents running
+                # concurrently. The SDK retries these with exponential backoff
+                # and jitter; raising its cap is the whole fix.
+                max_retries=self.settings.api_max_retries,
+                timeout=self.settings.api_timeout_seconds,
+            )
         return self._client
 
     # -- persistence helpers ----------------------------------------------
@@ -437,6 +446,11 @@ class AgentRuntime:
         tool: Tool | None = self.tools.get(name)
         started = time.perf_counter()
 
+        # Ambient, so context-free tools can still record who acted without
+        # taking a context parameter. Each asyncio task has its own copy, so
+        # concurrent agents never see one another's value.
+        set_current_agent(self.config.key)
+
         if tool is None:
             outcome = ToolOutcome(
                 content=(
@@ -448,11 +462,24 @@ class AgentRuntime:
             )
         else:
             try:
+                # Checked before dispatch, so a malformed call costs one wasted
+                # iteration rather than the run. The model emitting arguments
+                # that do not match a schema is normal, not exceptional, and the
+                # message it gets back has to be precise enough to correct on
+                # the next turn.
+                validate_arguments(name, tool.input_schema, arguments)
                 if tool.needs_context:
                     outcome = await tool.handler(context, **arguments)
                 else:
                     outcome = await tool.handler(**arguments)
+            except ArgumentError as exc:
+                outcome = ToolOutcome(
+                    content=str(exc),
+                    payload={"arguments": arguments, "invalid_arguments": True},
+                    is_error=True,
+                )
             except TypeError as exc:
+                # A signature mismatch the schema did not describe.
                 outcome = ToolOutcome(
                     content=f"Invalid arguments for {name}: {exc}",
                     payload={"arguments": arguments},
@@ -576,7 +603,9 @@ class AgentRuntime:
             ) from exc
         except anthropic.RateLimitError as exc:
             raise AgentRuntimeError(
-                "rate limited by the API after the SDK's own retries; try again shortly."
+                f"rate limited by the API, and still limited after "
+                f"{self.settings.api_max_retries} backed-off retries. The task is halted "
+                "rather than hammering a service that is asking for space; retry it later."
             ) from exc
         except anthropic.APIStatusError as exc:
             raise AgentRuntimeError(f"API error {exc.status_code}: {exc.message}") from exc
