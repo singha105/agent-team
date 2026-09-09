@@ -40,7 +40,7 @@ export function Desk({ agent, status, hue, variant, selected, onSelect, deskRef 
       aria-pressed={selected}
       data-agent={agent.key}
       data-status={status}
-      className="group relative flex w-full flex-col items-center rounded-2xl px-2 pb-3 pt-10 text-left transition-colors hover:bg-ink-850/60 focus-visible:bg-ink-850/60"
+      className="group relative flex w-full flex-col items-center rounded-2xl px-2 pb-2 pt-12 text-left transition-colors hover:bg-ink-850/60 focus-visible:bg-ink-850/60"
       whileHover={reduced ? undefined : { y: -4 }}
       whileTap={reduced ? undefined : { y: -1 }}
       transition={{ type: "spring", stiffness: 320, damping: 24 }}
@@ -55,7 +55,7 @@ export function Desk({ agent, status, hue, variant, selected, onSelect, deskRef 
         />
       )}
 
-      <div className="relative w-full max-w-[220px]">
+      <div className="relative w-full max-w-[300px]">
         <StatusIndicator pose={pose} />
         <AgentCharacter
           agentKey={agent.key}
