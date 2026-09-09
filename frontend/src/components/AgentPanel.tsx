@@ -107,11 +107,19 @@ export function AgentPanel() {
             aria-modal="true"
             aria-label={`${agent.display_name} — ${agent.role}`}
             className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[min(34rem,100vw)] flex-col border-l border-ink-700 bg-ink-850 shadow-2xl shadow-black/60 outline-none"
-            initial={{ x: "100%" }}
-            animate={{ x: 0 }}
-            exit={{ x: "100%" }}
+            // The entrance is a short offset plus a fade, not a full-width
+            // slide. Nothing about whether the panel is *usable* may depend on
+            // an animation finishing: rAF is throttled in a background tab, in
+            // low-power modes and in some automation harnesses, and a panel
+            // whose resting place is the far end of a 544px slide simply never
+            // arrives there. At a 28px offset the worst case is a panel sitting
+            // slightly proud of its final position, still fully readable and
+            // operable.
+            initial={{ x: 28, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: 28, opacity: 0 }}
             transition={
-              reduced ? { duration: 0.12 } : { type: "spring", stiffness: 260, damping: 32 }
+              reduced ? { duration: 0.12 } : { type: "spring", stiffness: 320, damping: 34 }
             }
           >
             {/* --- header ------------------------------------------------- */}

@@ -82,13 +82,44 @@ PREVIEW_CHARS = 240
 
 
 def _preview(value: Any) -> str:
-    """A short excerpt for the event stream.
+    """A short, readable excerpt for the event stream.
 
     The WebSocket is a notification channel; clients fetch full bodies over
     REST. Sending whole file contents through every subscriber's queue would
     make a large write_file stall the stream for everyone.
+
+    Content blocks are summarised rather than stringified. A raw dump of
+    Messages API blocks is unreadable in a live view — it is mostly ids and
+    punctuation — and the live view is the thing a person actually watches.
     """
-    text = value if isinstance(value, str) else str(value)
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, list):
+        parts: list[str] = []
+        for block in value:
+            data = block if isinstance(block, dict) else _serialize(block)
+            if not isinstance(data, dict):
+                parts.append(str(data))
+                continue
+            kind = data.get("type")
+            if kind == "text":
+                parts.append(str(data.get("text", "")).strip())
+            elif kind == "tool_use":
+                parts.append(f"→ {data.get('name')}")
+            elif kind == "tool_result":
+                body = data.get("content")
+                prefix = "✗ " if data.get("is_error") else ""
+                parts.append(f"{prefix}{body if isinstance(body, str) else ''}".strip())
+            elif kind == "thinking":
+                parts.append("(thinking)")
+        text = "  ".join(p for p in parts if p)
+    elif isinstance(value, dict):
+        # Tool arguments: show the values, which are what identify the call.
+        text = "  ".join(f"{k}={v}" for k, v in value.items())
+    else:
+        text = str(value)
+
+    text = " ".join(text.split())
     return text if len(text) <= PREVIEW_CHARS else text[:PREVIEW_CHARS] + "…"
 
 

@@ -440,3 +440,27 @@ async def test_unexpected_exception_never_strands_a_task_in_running(
     refreshed = (await session.execute(select(Task).where(Task.id == task.id))).scalar_one()
     assert refreshed.status == TaskStatus.FAILED
     assert refreshed.status != TaskStatus.IN_PROGRESS
+
+
+async def test_event_previews_are_readable_not_raw_blocks(session, agent, settings) -> None:
+    """The live view is what a person watches, and a stringified list of
+    Messages API blocks is mostly ids and punctuation."""
+    from app.agents.runtime import _preview
+
+    assert _preview([{"type": "text", "text": "Built the endpoint."}]) == "Built the endpoint."
+    assert _preview([{"type": "tool_use", "name": "write_file", "id": "t1"}]) == "→ write_file"
+    assert (
+        _preview([{"type": "tool_result", "content": "exit code: 0", "is_error": False}])
+        == "exit code: 0"
+    )
+    assert _preview([{"type": "tool_result", "content": "Denied", "is_error": True}]).startswith(
+        "✗"
+    )
+    assert _preview({"path": "api/books.py"}) == "path=api/books.py"
+
+    # No raw dict punctuation leaks through.
+    rendered = _preview([{"type": "tool_use", "name": "ask_agent", "id": "a1", "input": {"x": 1}}])
+    assert "{" not in rendered and "'" not in rendered
+
+    # Still bounded.
+    assert len(_preview([{"type": "text", "text": "x" * 5000}])) <= 241
