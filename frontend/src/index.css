@@ -1,0 +1,177 @@
+@import "tailwindcss";
+
+/*
+  AgentTeam — "the studio after hours".
+
+  The room is dark and warm, and every desk is a pool of monitor light. That is
+  not decoration: an agent's status is expressed as how its desk is lit, so the
+  room can be read at a glance from across the desk without reading a single
+  label. Colour is therefore spent almost entirely on light, and the interface
+  chrome stays close to the ground tone.
+*/
+
+@theme {
+  /* --- ground and surfaces -------------------------------------------- */
+  /* Warm ink rather than black: pure #000 next to warm light reads as a hole. */
+  --color-ink-900: #100e0c;
+  --color-ink-850: #17140f;
+  --color-ink-800: #1e1a15;
+  --color-ink-700: #2a251e;
+  --color-ink-600: #3a332a;
+  --color-ink-500: #4e4538;
+
+  /* --- text ------------------------------------------------------------ */
+  --color-parchment: #f2ece1;
+  --color-parchment-dim: #b8ae9d;
+  --color-parchment-faint: #7d7568;
+
+  /* --- the lamp -------------------------------------------------------- */
+  --color-lamp: #e9b45c;
+  --color-lamp-deep: #c4863a;
+
+  /* --- agent signature glows ------------------------------------------ */
+  /* One hue per desk, chosen so all four stay legible at low luminance. */
+  --color-agent-backend: #efb15c;
+  --color-agent-database: #56c8c0;
+  --color-agent-frontend: #ef8b7d;
+  --color-agent-devops: #a9c86a;
+
+  /* --- status ---------------------------------------------------------- */
+  --color-state-idle: #6a6154;
+  --color-state-thinking: #8fb4d9;
+  --color-state-working: #efb15c;
+  --color-state-waiting: #e9b45c;
+  --color-state-blocked: #9b8bc4;
+  --color-state-error: #cf7566;
+
+  /* --- lifecycle (task board) ------------------------------------------ */
+  --color-task-queued: #7d7568;
+  --color-task-progress: #8fb4d9;
+  --color-task-review: #e9b45c;
+  --color-task-done: #a9c86a;
+  --color-task-failed: #cf7566;
+
+  /* --- type ------------------------------------------------------------ */
+  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-sans: "Familjen Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* --- motion ---------------------------------------------------------- */
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-lean: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-ink-900);
+    color: var(--color-parchment);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv01";
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  /*
+    A faint grain over the whole room. Flat dark fills band badly on cheap
+    panels, and the noise both hides that and reads as air in the space.
+  */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-lamp);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  ::selection {
+    background: var(--color-lamp-deep);
+    color: var(--color-ink-900);
+  }
+
+  /* Scrollbars, kept in the room's palette rather than the OS default. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-600) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-ink-600);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Small caps label used for every section heading and metric key. */
+  .label-micro {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-parchment-faint);
+  }
+
+  .surface {
+    background: linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--color-ink-800) 92%, white 8%),
+      var(--color-ink-850)
+    );
+    border: 1px solid var(--color-ink-700);
+  }
+
+  /* Hairline separators that read at this luminance without becoming lines. */
+  .rule {
+    border-color: color-mix(in oklab, var(--color-ink-600) 70%, transparent);
+  }
+}
+
+/*
+  Reduced motion. The spec asks specifically for idle loops and bubble travel to
+  stop. State changes still need to be *legible*, so transitions are shortened
+  rather than removed — a hard cut would lose the information the movement
+  carries. Framer Motion is told separately via useReducedMotion().
+*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.12s !important;
+    scroll-behavior: auto !important;
+  }
+  body::after {
+    display: none;
+  }
+}
