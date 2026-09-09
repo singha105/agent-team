@@ -9,9 +9,10 @@ reconstructed exactly.
 
 ## Status
 
-**Phase 3 of 5 — inter-agent collaboration.** No UI yet. Agents delegate to each other
-without you: assign one task to Backend and it asks the Database agent for a schema,
-gets it, and builds against it.
+**Phase 4 of 5 — the animated team room.** A dark studio where four agents sit at lit
+desks, their status readable as how each desk is lit. Assign work to a character, watch
+it switch to thinking then working while its run streams into a panel, and see a bubble
+fly across the room when it delegates.
 
 | Agent | Name | Model | Owns |
 |---|---|---|---|
@@ -80,6 +81,54 @@ python scripts/export_types.py
 ```
 
 CI fails if the committed `frontend/src/lib/events.ts` drifts from the backend.
+
+## The interface
+
+```bash
+# Terminal 1 — a scripted team, no API key needed
+python scripts/demo_server.py --seed
+
+# Terminal 2
+cd frontend && npm install && npm run dev   # http://localhost:5173
+```
+
+Point it at a real backend instead by running `uvicorn app.main:app` in place of the
+demo server; the frontend proxies `/api` and `/ws` to port 8000 either way.
+
+**Team room.** Four characters built from layered SVG — no sprite sheets, no stock art.
+Status is carried by light before shape: an agent's screen brightness says what it is
+doing from across the room, its posture is the second reading, the mark over its head
+the third. Working burns brightest and flickers irregularly; thinking leans back with a
+thought bubble; `waiting_on_human` is the one state that turns to face you. Blocked and
+error dim rather than alarm.
+
+**Speech bubbles** fly the real measured distance between two desks when agents message
+each other, and rest above the heads rather than on the desks so they never swallow a
+click meant for the character underneath. Clicking one opens the full message.
+
+**Agent panel** — bio, model badge, live status, what they own, the run streaming as it
+happens, task history with review controls, and a box to assign work.
+
+**Task board** — columns matching the lifecycle the backend enforces. The only drag
+offered is `needs_review` → `done`, because approval is the only transition a human can
+make; offering drop targets the API would refuse is worse than not offering them.
+
+**Trace viewer** — every step in the order it happened, tool arguments and results,
+delegated children, and cost per agent and per model.
+
+### Accessibility and motion
+
+Every character is a real `<button>` whose accessible name carries what the pose and
+glow carry visually — who they are, their role, what they are doing and what that means.
+Escape closes the panel and returns focus to the desk that opened it.
+
+`prefers-reduced-motion` disables idle loops, blinking and bubble travel: a bubble
+appears at its destination instead of crossing, so the information survives and only the
+movement is dropped. State changes still animate briefly, because a hard cut would lose
+what the movement communicates.
+
+The room reflows from a row of four to a 2×2 grid at tablet width, and desk anchors are
+remeasured so bubbles keep flying to the right place.
 
 ## Collaboration
 

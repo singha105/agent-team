@@ -318,3 +318,90 @@ acknowledging and stopping is a valid outcome — an agent handed a bare message
 as an order, and "the contract is published" becomes a second project.
 
 `AGENTTEAM_WAKE_ON_NOTIFY=false` restores the previous behaviour.
+
+---
+
+## Phase 4 — The animated team room
+
+**Goal:** the interface, with visual quality treated as a requirement.
+
+### Direction
+
+"The studio after hours": a warm dark room where each desk is a pool of monitor light.
+That is load-bearing rather than decorative. The spec requires screen glow and flicker as
+animation states, so status is expressed as *how a desk is lit* and the room reads at a
+glance without labels. Colour is spent almost entirely on light; the chrome stays near
+the ground tone. Type is Instrument Serif / Familjen Grotesk / IBM Plex Mono —
+deliberately none of the usual defaults, and no purple gradients anywhere.
+
+### Built
+
+| Area | Detail |
+|---|---|
+| Scaffold | Vite 8, React 18, TS, Tailwind 4, Vitest 5 — versions chosen to reach zero npm audit findings |
+| Transport | Reconnecting WebSocket with jittered backoff and `?since_seq=` replay |
+| Store | Zustand, with the event reducer as a separate pure module |
+| Characters | Layered SVG, six animation states, tested state machine |
+| Room | Shallow stage, measured desk anchors, flying speech bubbles |
+| Panel | Bio, model badge, status, history, review controls, live run, assignment |
+| Board | Lifecycle columns, drag to approve, inline rejection |
+| Trace | Ordered steps, tool detail, delegated children, per-agent cost |
+| Tests | 68 frontend, 321 backend |
+
+### Decisions
+
+**A shallow stage, not a true isometric projection.** Isometric would have turned the
+characters away from the viewer and pointed the screen glow — the thing status is carried
+by — into the room instead of at you.
+
+**Composition reworked after looking at it.** The first pass put a large monitor over the
+torso and every agent read as a head balanced on a box. The monitor is now low, narrow
+and much darker, and the torso is a shoulder line rather than a dome, so head, shoulders
+and arms all clear it.
+
+**Bubbles rest above the heads.** A resting bubble is a real button, and parking it on
+the character made the payoff animation swallow clicks meant for the desk underneath —
+the one interaction the room exists for.
+
+**Only one drag on the board.** Approval is the only transition a human can make; the
+backend refuses the rest. Offering drop targets that would be rejected is worse than not
+offering them.
+
+**Nothing hard-cuts, and nothing depends on an animation finishing.** Every state carries
+its own transition, and the panel entrance is a 28px offset rather than a full-width
+slide — see the bugs below.
+
+### Bugs found and fixed
+
+1. **The agent panel could be unreachable.** Its resting position was the far end of a
+   544px slide, so when rAF was throttled — background tab, low-power mode, an automation
+   harness — it never arrived and sat entirely off-screen. Nothing about whether a panel
+   is *usable* may depend on an animation completing.
+2. **An infinite render loop.** The panel selected a freshly built array from the store,
+   so React got a new snapshot every render and the component crashed.
+3. **Task history and the live run were always empty.** Both read the REST task list,
+   which is only refetched on demand, so a task created while the panel was open — or one
+   an agent created by delegating — never appeared. They read the event-mirrored store
+   now.
+4. **Bubbles overlapped into unreadable mush** when two agents messaged the same
+   recipient; they stagger now. Visible only at tablet width.
+5. **`rx="undefined"` on an animated SVG ellipse**, rejected by the browser; the floor
+   pool animates scale instead.
+6. **The live run showed stringified Messages API blocks** — mostly ids and punctuation.
+   Previews are summarised per block type now.
+
+All six were found by driving the real UI in a browser, not by a test.
+
+### Verified
+
+The exit criterion, end to end: opened the app, clicked Ada, typed "Build a REST API for
+a book library with search", submitted, and watched `backend=working` / `database=thinking`
+with twelve entries streaming into the panel, two bubbles crossing the room, and the cost
+meter live. Tablet reflow, keyboard access (four real buttons with descriptive names) and
+the graceful-degradation path all checked in the browser.
+
+### Deferred
+
+- **The live API call is still unverified** — no credentials. `python -m app.cli preflight`
+  remains the one command that closes it.
+- **Phase 5** — whatever the last day holds.
