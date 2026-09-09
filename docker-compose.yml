@@ -1,52 +1,83 @@
-# Runs the AgentTeam API. Agent commands still execute in separate, disposable
-# sandbox containers — this compose file does not change that.
+# One command from a clean clone:
+#
+#   cp .env.example .env    # then add your ANTHROPIC_API_KEY
+#   docker compose up --build
+#
+# Then open http://localhost:8080.
 #
 # READ THIS BEFORE USING IT
 #
 # The api service mounts the host Docker socket. That is what lets it create
-# sibling sandbox containers, and it means the api container can control the
-# host daemon — effectively root on the host. The trust boundary is unchanged
-# from running on the host directly: *AgentTeam's own code* is trusted, and
-# *agent-generated code* is not. Agent code never runs in this container; it
-# runs in the locked-down sibling container (no network, read-only rootfs,
-# dropped capabilities). Do not add agent-controlled input to this service's
-# command or environment.
+# sibling sandbox containers for agent commands, and it means the api container
+# can control the host daemon — effectively root on the host. The trust boundary
+# is unchanged from running on the host directly: *AgentTeam's own code* is
+# trusted, and *agent-generated code* is not. Agent code never runs in the api
+# container; it runs in the locked-down sibling container (no network, read-only
+# root filesystem, dropped capabilities, non-root user).
 #
-# If you are not comfortable mounting the socket, run the API on the host
-# instead — `uvicorn app.main:app --reload` — which needs no socket mount.
+# If you are not comfortable mounting the socket, set AGENTTEAM_SANDBOX_MODE to
+# "subprocess" — but read the Sandboxing section of the README first, because
+# that mode is not a security boundary.
 
 services:
-  api:
-    build:
-      context: .
-      dockerfile: docker/backend.Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in your shell or .env}
-      AGENTTEAM_DB_PATH: /srv/data/agentteam.db
-      AGENTTEAM_WORKSPACE_ROOT: /srv/workspace
-      # The sandbox's --volume flag is resolved by the HOST daemon, so it has
-      # to name a host path. Without this the API would ask the daemon to mount
-      # /srv/workspace, which does not exist on the host.
-      AGENTTEAM_HOST_WORKSPACE_ROOT: ${PWD}/workspace
-      AGENTTEAM_SANDBOX_MODE: docker
-      AGENTTEAM_SANDBOX_IMAGE: agentteam-runtime:latest
-    volumes:
-      - ./workspace:/srv/workspace
-      - ./data:/srv/data
-      - ./config:/srv/config:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      sandbox-image:
-        condition: service_completed_successfully
-
-  # Builds the sandbox runtime image and exits. The api service will not start
-  # until this succeeds, so the first `run_command` never fails on a missing
-  # image.
+  # Builds the sandbox runtime image and exits. Everything else waits on it, so
+  # the first run_command cannot fail on a missing image.
   sandbox-image:
     build:
       context: ./docker
       dockerfile: Dockerfile
     image: agentteam-runtime:latest
     command: ["python", "--version"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+      args:
+        UID: "10001"
+        GID: "10001"
+    environment:
+      # Required. Compose fails immediately with this message rather than at the
+      # first API call, which is a much worse place to discover it.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env — see .env.example}
+      AGENTTEAM_DB_PATH: /srv/data/agentteam.db
+      AGENTTEAM_WORKSPACE_ROOT: /srv/workspace
+      # The sandbox's --volume flag is resolved by the HOST daemon, so it has to
+      # name a host path. Without this the API would ask the daemon to mount
+      # /srv/workspace, which does not exist on the host.
+      AGENTTEAM_HOST_WORKSPACE_ROOT: ${PWD}/workspace
+      AGENTTEAM_SANDBOX_MODE: ${AGENTTEAM_SANDBOX_MODE:-docker}
+      AGENTTEAM_SANDBOX_IMAGE: agentteam-runtime:latest
+      AGENTTEAM_TEAM: ${AGENTTEAM_TEAM:-software}
+      AGENTTEAM_LOG_LEVEL: ${AGENTTEAM_LOG_LEVEL:-INFO}
+    volumes:
+      - ./workspace:/srv/workspace
+      - ./data:/srv/data
+      - ./config:/srv/config:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "8000"
+    ports:
+      # Exposed so the CLI and curl work from the host; the UI reaches it
+      # through nginx on the same origin. Override if 8000 is taken.
+      - "${AGENTTEAM_API_PORT:-8000}:8000"
+    depends_on:
+      sandbox-image:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      # Host port is configurable: a fixed one that collides with something
+      # already running turns "clone and run" into a debugging session.
+      - "${AGENTTEAM_WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        # Waits for /health to pass, not merely for the process to start, so the
+        # first page load never races the database migration.
+        condition: service_healthy
+    restart: unless-stopped
