@@ -150,10 +150,11 @@ export function TeamRoom() {
           {/* --- bubbles in flight ---------------------------------------- */}
           <div className="pointer-events-none absolute inset-0 z-30">
             <AnimatePresence>
-              {bubbles.map((bubble) => (
+              {bubbles.map((bubble, index) => (
                 <FlyingBubble
                   key={bubble.id}
                   bubble={bubble}
+                  index={index}
                   from={anchors[bubble.from] ?? null}
                   to={anchors[bubble.to] ?? null}
                   hue={themeFor(bubble.from).hue}

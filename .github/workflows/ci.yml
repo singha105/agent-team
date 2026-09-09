@@ -70,6 +70,41 @@ jobs:
           # needs one is a test that spends money in CI.
           ANTHROPIC_API_KEY: ""
 
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npx eslint .
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: No known vulnerabilities
+        # The dependency versions were chosen to reach zero; this stops them
+        # drifting back without anyone noticing.
+        run: npm audit --audit-level=high
+
   compose:
     name: compose config
     runs-on: ubuntu-latest

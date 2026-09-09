@@ -17,6 +17,8 @@ export interface FlyingBubbleProps {
   from: { x: number; y: number } | null;
   to: { x: number; y: number } | null;
   hue: string;
+  /** Position among the bubbles currently resting, used to stack them. */
+  index: number;
   onOpen: (bubble: Bubble) => void;
   onDone: (id: string) => void;
 }
@@ -25,7 +27,7 @@ export interface FlyingBubbleProps {
 const TRAVEL_SECONDS = 2.4;
 const LINGER_SECONDS = 1.1;
 
-export function FlyingBubble({ bubble, from, to, hue, onOpen, onDone }: FlyingBubbleProps) {
+export function FlyingBubble({ bubble, from, to, hue, index, onOpen, onDone }: FlyingBubbleProps) {
   const reduced = useReducedMotion() ?? false;
 
   if (!from || !to) return null;
@@ -34,6 +36,12 @@ export function FlyingBubble({ bubble, from, to, hue, onOpen, onDone }: FlyingBu
   // full width of the room gets a real arc.
   const distance = Math.abs(to.x - from.x);
   const lift = Math.min(96, 30 + distance * 0.16);
+
+  // Two agents can message the same recipient at once. Without a stagger the
+  // bubbles land on the identical anchor and overlap into unreadable mush,
+  // which was plainly visible at tablet width.
+  const stack = index * 58;
+  const landing = { x: to.x, y: to.y - stack };
 
   return (
     // Two elements on purpose. The outer one is animated to an anchor *point*;
@@ -48,10 +56,10 @@ export function FlyingBubble({ bubble, from, to, hue, onOpen, onDone }: FlyingBu
           ? // Reduced motion: the spec asks for bubble travel to stop, so it
             // appears at the destination instead of crossing the room. The
             // information is kept; only the movement is dropped.
-            { x: to.x, y: to.y, opacity: 1 }
+            { x: landing.x, y: landing.y, opacity: 1 }
           : {
-              x: [from.x, (from.x + to.x) / 2, to.x],
-              y: [from.y, Math.min(from.y, to.y) - lift, to.y],
+              x: [from.x, (from.x + landing.x) / 2, landing.x],
+              y: [from.y, Math.min(from.y, landing.y) - lift, landing.y],
               opacity: [0, 1, 1],
             }
       }
