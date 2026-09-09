@@ -405,3 +405,44 @@ the graceful-degradation path all checked in the browser.
 - **The live API call is still unverified** — no credentials. `python -m app.cli preflight`
   remains the one command that closes it.
 - **Phase 5** — whatever the last day holds.
+
+---
+
+## Live API verification — closed
+
+The one item open since Phase 1 is done. `preflight` was run against the real service:
+
+```
+OK   request accepted and response parsed
+  model returned   claude-haiku-4-5-20251001
+  stop_reason      end_turn
+  content blocks   ['text']
+  reply            'ready'
+  usage            in 2,736 / out 4
+  actual cost      $0.002756
+```
+
+Anthropic accepted the request this project builds — real agent system prompt, all seven
+tool schemas — and the response parsed into the fields the budget and cost accounting
+read. Every claim the project makes about the API path is now backed by a real call.
+
+Verified on Haiku rather than Opus deliberately: what is being checked is the request
+*shape*, which is model-independent, so the cheapest model proves the same thing for a
+fifth of the cost.
+
+### Two bugs the real call exposed
+
+1. **The pre-spend estimate undershot.** It read "under $0.0023" and the call cost
+   $0.002756 — four characters per token was too generous for a prompt this dense. A
+   number printed beside the word "under" must never read low, so the heuristic is now
+   three characters per token, calibrated against the measured 2,736 tokens and pinned
+   by a test.
+2. **A test passed for the wrong reason once a real .env existed.** The "no key" case
+   deleted the environment variable but settings also read the repo's `.env`, so on any
+   machine with a key on disk the test exercised the success path and asserted the
+   failure code. It now points `env_file` at an empty directory, so the absence is true
+   of the whole resolution chain.
+
+The second is the more interesting one: the test was green on CI and on my machine for
+the entire project, and only became wrong the moment the thing it was testing became
+possible.

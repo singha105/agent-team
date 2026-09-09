@@ -188,7 +188,13 @@ scripted object, and the contract suite drives the real Anthropic SDK over real 
 against a local server speaking the Messages API wire format. Together they prove the
 request is well formed, the tool schemas are valid, and the response parses.
 
-What they cannot prove is that Anthropic's service accepts it. One command does:
+What they cannot prove is that Anthropic's service accepts it. One command does — and
+it has been run:
+
+> **Verified 2026-09-09.** `claude-haiku-4-5` accepted the request with the real system
+> prompt and all seven tool schemas, returned `stop_reason: end_turn`, and the response
+> parsed into the fields the budget and cost accounting read. 2,736 input tokens,
+> \$0.002756.
 
 ```bash
 python -m app.cli preflight --dry-run  # show the request and estimate, send nothing

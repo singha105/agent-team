@@ -320,11 +320,21 @@ async def test_preflight_reports_success_against_a_real_http_endpoint(
     assert sent["max_tokens"] == 32
 
 
-async def test_preflight_without_a_key_exits_two(wire_settings, monkeypatch) -> None:
+async def test_preflight_without_a_key_exits_two(wire_settings, monkeypatch, tmp_path) -> None:
+    """Deleting the env var is not enough to simulate "no key".
+
+    Settings also read the repo's .env, so once a developer has a real key on
+    disk this test passed for the wrong reason — it exercised the success path
+    and asserted the failure code. Point env_file somewhere empty so the
+    absence is real.
+    """
     from app.cli import build_parser, cmd_preflight
+    from app.core import config as cfg
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    from app.core import config as cfg
+    # Point env_file at a directory with no .env in it, so "no key" is true of
+    # the whole resolution chain rather than only of the process environment.
+    monkeypatch.setitem(cfg.Settings.model_config, "env_file", tmp_path / ".env")
 
     cfg.get_settings.cache_clear()
     try:
@@ -426,3 +436,30 @@ async def test_preflight_rejects_an_unpriced_model_before_calling(wire_settings)
         args = build_parser().parse_args(["preflight", "--model", "claude-not-real", "--dry-run"])
         assert await cmd_preflight(args) == 2
         assert wire.requests == []
+
+
+def test_the_cost_estimate_does_not_undershoot() -> None:
+    """The estimate is printed beside the word 'under', so reading low makes it
+    a false statement about spend.
+
+    Calibrated against a real call: 2,736 input tokens for the backend agent's
+    prompt and seven tool schemas. The heuristic must sit above that, not below.
+    """
+    import sys
+    from pathlib import Path as P
+
+    sys.path.insert(0, str(P(__file__).resolve().parents[1]))
+    from app.agents.config_loader import load_agent_config
+    from app.agents.tools import build_toolset
+
+    directory = P(__file__).resolve().parents[2] / "config" / "agents"
+    config = load_agent_config("backend", directory)
+    system = config.resolve_system_prompt(directory)
+    schemas, _ = build_toolset(config.tools)
+
+    estimated = (len(system) + sum(len(str(t)) for t in schemas)) // 3
+    observed_on_a_real_call = 2_736
+    assert estimated >= observed_on_a_real_call, (
+        f"estimate {estimated} is below the {observed_on_a_real_call} tokens a real "
+        "call actually used"
+    )

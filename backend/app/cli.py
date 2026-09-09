@@ -211,7 +211,13 @@ async def cmd_preflight(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    approx_input = (len(system) + sum(len(str(t)) for t in schemas)) // 4
+    # Characters per token, deliberately conservative. The first live run showed
+    # 2,736 actual input tokens against 2,164 estimated at four characters per
+    # token — the estimate undershot by a quarter, so the word "under" printed
+    # beside it was false. A number whose whole job is to bound spend before you
+    # commit to it must never read low.
+    CHARS_PER_TOKEN = 3
+    approx_input = (len(system) + sum(len(str(t)) for t in schemas)) // CHARS_PER_TOKEN
     est = (approx_input * rates.input + args.max_tokens * rates.output) / 1_000_000
 
     print(_rule("preflight"))
