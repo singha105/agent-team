@@ -1,18 +1,103 @@
 # AgentTeam
 
-A simulated software engineering team of AI agents. You are the manager; the agents are the team.
+[![CI](https://github.com/singha105/agent-team/actions/workflows/ci.yml/badge.svg)](https://github.com/singha105/agent-team/actions/workflows/ci.yml)
 
-Four agents — Backend, DevOps, Frontend, Database — each with a distinct role, model, and system
-prompt. They read and write files in a shared sandboxed workspace, run commands, and (from Phase 3)
-talk to each other. Every API call, tool call, and message is persisted so any run can be
-reconstructed exactly.
+**A simulated software engineering team of AI agents. You are the manager; the agents are the team.**
 
-## Status
+Four agents sit at lit desks in a dark studio. Give one a task and watch it work —
+and when it needs something it does not own, watch it ask a teammate and build on
+the answer, without you.
 
-**Phase 4 of 5 — the animated team room.** A dark studio where four agents sit at lit
-desks, their status readable as how each desk is lit. Assign work to a character, watch
-it switch to thinking then working while its run streams into a panel, and see a bubble
-fly across the room when it delegates.
+![The team room](docs/media/team-room.png)
+
+> **Recording the screenshot above**
+>
+> ```bash
+> python scripts/demo_server.py --seed        # terminal 1
+> cd frontend && npm run dev                  # terminal 2
+> ```
+>
+> Open `http://localhost:5173` and wait a few seconds for the agents to start
+> delegating. Capture at 1440×900 with a bubble mid-flight — that frame carries
+> the whole idea. Save to `docs/media/team-room.png`.
+>
+> For a GIF, `⌘⇧5` on macOS records a region; keep it under 8 seconds and around
+> 3 MB, and start recording just before the first bubble leaves a desk.
+
+---
+
+## The problem
+
+Multi-agent demos usually show you a transcript. A wall of text scrolls past, some
+of it is tool calls, and you have no idea what it cost, whether the agents actually
+talked to each other, or what would happen if one of them looped forever.
+
+AgentTeam is the opposite bet: **make the whole thing observable, bounded and
+reconstructable.**
+
+- **Observable** — status is legible as light in a room, not as a log line. Every
+  message, tool call and token lands in SQLite and streams live over a WebSocket.
+- **Bounded** — iterations, tokens, delegation hops, cycles and a wall clock all
+  have ceilings, and every one names the limit it tripped.
+- **Reconstructable** — any run replays from the database alone: every step in
+  order, every tool argument and result, every delegated child, every cent.
+
+---
+
+## Quickstart
+
+**One command, from a clean clone:**
+
+```bash
+git clone https://github.com/singha105/agent-team.git && cd agent-team
+cp .env.example .env          # then put your ANTHROPIC_API_KEY in it
+docker compose up --build
+```
+
+Open **http://localhost:8080**.
+
+**No API key?** The whole app runs against a scripted team — real backend, real
+worker pool, real delegation, real trace, only the model is scripted:
+
+```bash
+python scripts/demo_server.py --seed          # terminal 1
+cd frontend && npm install && npm run dev     # terminal 2  →  localhost:5173
+```
+
+**From the terminal instead:**
+
+```bash
+python -m app.cli run --agent backend --task "Build a REST API for a book library with search"
+python -m app.cli show --task 1     # the full trace
+python -m app.cli agents            # the roster
+python -m app.cli preflight         # verify the live API for ~$0.01
+```
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    YOU["You"] -->|"assign a task"| ROOM["Team room"]
+    ROOM --> API["FastAPI"]
+    API --> POOL["Worker pool<br/>one lane per agent"]
+    POOL --> LOOP["Agent loop"]
+    LOOP <--> CLAUDE["Claude"]
+    LOOP -->|"run_command"| BOX["Sandbox container"]
+    LOOP -->|"ask_agent"| LOOP
+    LOOP --> TRACE[("SQLite trace")]
+    LOOP --> EVENTS["Event stream"]
+    EVENTS -->|"live"| ROOM
+    TRACE --> VIEWER["Trace viewer"]
+```
+
+Full detail, with the loop, the buses, the sandbox and the budget system:
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+---
+
+## The team
 
 | Agent | Name | Model | Owns |
 |---|---|---|---|
@@ -21,303 +106,163 @@ fly across the room when it delegates.
 | Frontend | Mira | `claude-sonnet-5` | Components, client state, styling, accessibility |
 | Database | Ines | `claude-sonnet-5` | Schema, migrations, indexes, query performance |
 
-## Requirements
+A second roster ships too — a three-agent research team — as proof the runtime is
+generic. `AGENTTEAM_TEAM=research` and it runs, with no code change:
+**[docs/CREATING_A_TEAM.md](docs/CREATING_A_TEAM.md)**.
 
-- Python 3.11+
-- Docker (for sandboxed command execution — see [Sandboxing](#sandboxing))
-- An Anthropic API key
+---
 
-## Setup
+## Design decisions
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+### Why agents are configuration, not code
 
-cp .env.example .env      # then set ANTHROPIC_API_KEY
-docker build -t agentteam-runtime:latest docker/
-alembic -c backend/alembic.ini upgrade head
+An agent is one YAML file. Name, role, model, system prompt, tool grants, budget
+overrides — all of it data. `runtime.py` contains no knowledge of any specific
+agent.
+
+The test is uncomfortable but fair: *if adding an agent requires touching Python,
+the claim is false.* So the repo ships a second team of a different size with
+different roles, and a test builds a one-agent team from scratch in a temp
+directory and runs it.
+
+This also makes the expensive knob cheap. Changing a model is one line:
+
+```yaml
+model: claude-haiku-4-5    # was claude-opus-5
 ```
 
-## API
+### Why those model assignments, and what it costs
 
-```
-POST   /api/tasks              create and dispatch; returns immediately with a task id
-GET    /api/tasks              list, filterable by agent_key and status
-GET    /api/tasks/{id}         one task with full message and tool-call history
-GET    /api/tasks/{id}/trace   the whole run as one list, ordered in real time
-POST   /api/tasks/{id}/review  approve, or reject with feedback to re-queue
-GET    /api/agents             roster with live status
-WS     /ws                     typed event stream
-```
+| | Model | Rate (in/out per MTok) | Reasoning |
+|---|---|---|---|
+| Backend, DevOps | `claude-opus-5` | $5 / $25 | These two make decisions others build on. A wrong API contract or a broken pipeline propagates; the whole team then builds on it. |
+| Frontend, Database | `claude-sonnet-5` | $2 / $10 | Both work against a contract someone else published. The task is well-specified by the time it reaches them, which is exactly where a cheaper model holds up. |
 
-Tasks execute in a background worker pool — one queue per agent, so an agent's own
-work is serialised while different agents run concurrently. The HTTP request never
-waits on a run.
+Measured on the book-library task with a live delegation, that mix costs roughly
+**$0.20–0.50 a run**. All four on Sonnet is about a third of that and noticeably
+worse at the contract-design step — the failure mode is a plausible-looking API
+that the frontend then cannot implement. All four on Haiku is around **$0.03** and
+struggles with the tool-use loop itself.
 
-### Task lifecycle
+The point is that this is a **config decision, not an architecture decision**. You
+can move the whole roster down a tier for development and back up for a real run
+without touching code.
 
-```
-queued → in_progress → needs_review → done
-              ↓                ↓
-     failed / budget_exceeded  └→ queued   (rejection, with feedback)
-```
+### Why delegation is bounded by a *tree*, not a run
 
-Transitions are validated centrally; an illegal move raises rather than corrupting
-the trace. Rejection re-queues the task with your feedback appended as a new user
-message, and the agent resumes with its prior conversation still in context.
+Every limit — hops, cycles, the wall clock — belongs to the whole delegation tree.
 
-### Event stream
+A per-run hop counter lets every new child reset the budget, so the limit means
+nothing. Per-run timeouts multiply: ten nested runs at 60s each is a ten-minute
+stall, not a one-minute one. And cycle detection refuses a target already in the
+chain, because that agent is *blocked waiting on this very call* — asking it would
+deadlock, and it catches A→B→A one hop before it becomes a ping-pong.
 
-Seven typed events — `agent.status_changed`, `task.created`, `task.status_changed`,
-`message.created`, `tool.started`, `tool.finished`, `usage.updated` — each carrying a
-monotonic `seq` so a client can detect a gap. Reconnect with `?since_seq=N` to replay
-what was missed.
+The limits survive the queue too. A woken notification or a re-queued rejection
+has no live parent to inherit from, so the budget is rebuilt from the database:
+hops counted from the messages already in the tree, the chain from task ancestry,
+the deadline from the root task's creation.
 
-TypeScript types are generated from the Pydantic schemas:
+A refusal comes back to the agent as a **tool error it can work around**, not an
+exception that kills the run.
 
-```bash
-python scripts/export_types.py
-```
+### Why the sandbox allow-list is not the security boundary
 
-CI fails if the committed `frontend/src/lib/events.ts` drifts from the backend.
+The allow-list contains `python`, `pip`, `npm` and `git`. Each of those
+independently grants arbitrary code execution — `python -c "import os;
+os.system(...)"` escapes in one command.
 
-## The interface
+So the boundary is a **disposable container**: `--network=none`, read-only root
+filesystem, dropped capabilities, memory and PID limits, the workspace as the only
+writable mount, killed by name on timeout. The allow-list is defence in depth and
+a guard against accidents.
 
-```bash
-# Terminal 1 — a scripted team, no API key needed
-python scripts/demo_server.py --seed
+Verified against a running daemon, not assumed: host filesystem unreachable,
+egress fails with `ENETUNREACH`, writes to `/` rejected, a 60s sleep killed at the
+5s timeout with no container left behind.
 
-# Terminal 2
-cd frontend && npm install && npm run dev   # http://localhost:5173
-```
+### Why status is light
 
-Point it at a real backend instead by running `uvicorn app.main:app` in place of the
-demo server; the frontend proxies `/api` and `/ws` to port 8000 either way.
+The room is dark and every desk is a pool of monitor light. That is not styling —
+screen brightness is the *primary* carrier of status, so four agents can be read
+at a glance without reading a single label. Posture is the second reading, the
+mark above the head the third.
 
-**Team room.** Four characters built from layered SVG — no sprite sheets, no stock art.
-Status is carried by light before shape: an agent's screen brightness says what it is
-doing from across the room, its posture is the second reading, the mark over its head
-the third. Working burns brightest and flickers irregularly; thinking leans back with a
-thought bubble; `waiting_on_human` is the one state that turns to face you. Blocked and
-error dim rather than alarm.
+Characters are layered SVG built in code: no sprite sheets, no stock art. An
+agent the UI has never seen gets a coherent desk from a hash of its key.
 
-**Speech bubbles** fly the real measured distance between two desks when agents message
-each other, and rest above the heads rather than on the desks so they never swallow a
-click meant for the character underneath. Clicking one opens the full message.
+---
 
-**Agent panel** — bio, model badge, live status, what they own, the run streaming as it
-happens, task history with review controls, and a box to assign work.
+## What is verified, and what is not
 
-**Task board** — columns matching the lifecycle the backend enforces. The only drag
-offered is `needs_review` → `done`, because approval is the only transition a human can
-make; offering drop targets the API would refuse is worse than not offering them.
+| | |
+|---|---|
+| 353 backend + 68 frontend tests | green on Python 3.11/3.12/3.13 |
+| Sandbox isolation | checked against a real Docker daemon |
+| The live API path | **verified** — a real call, accepted, parsed |
+| `docker compose up` | brought up and checked healthy from a clean clone |
 
-**Trace viewer** — every step in the order it happened, tool arguments and results,
-delegated children, and cost per agent and per model.
+Most tests run without an API key: the model is scripted, and a contract suite
+drives the real Anthropic SDK over real HTTP against a local server speaking the
+Messages API wire format. That proves the request shape without spending anything.
 
-### Accessibility and motion
-
-Every character is a real `<button>` whose accessible name carries what the pose and
-glow carry visually — who they are, their role, what they are doing and what that means.
-Escape closes the panel and returns focus to the desk that opened it.
-
-`prefers-reduced-motion` disables idle loops, blinking and bubble travel: a bubble
-appears at its destination instead of crossing, so the information survives and only the
-movement is dropped. State changes still animate briefly, because a hard cut would lose
-what the movement communicates.
-
-The room reflows from a row of four to a 2×2 grid at tablet width, and desk anchors are
-remeasured so bubbles keep flying to the right place.
-
-## Collaboration
-
-Agents have three tools beyond the filesystem:
-
-| Tool | Blocking | Effect |
-|---|---|---|
-| `ask_agent` | yes | Creates a child task, runs it, returns the answer as the tool result |
-| `send_message` | no | A one-way note. The sender does not wait, but the recipient is woken with a follow-up task so an idle agent actually acts on it |
-| `append_project_context` | no | Publishes a decision to `workspace/PROJECT.md` |
-
-`PROJECT.md` is the team's shared context — the schema, the API contract, the
-conventions. Every agent is given its contents at the start of a task and can add to
-it. It is **append-only, enforced in code**: `write_file` refuses the path too, since
-an enforcement a neighbouring tool can bypass is not an enforcement.
-
-### Handoff order
-
-Database publishes the schema → Backend builds on it and publishes the API contract →
-Frontend consumes that contract → DevOps reads both. Each agent is told to check
-`PROJECT.md` for what it depends on and to ask the owner if something is missing,
-rather than inventing it. Handoffs reference **roles, not agent names**, so swapping
-the roster does not break the prompts.
-
-### Loop protection
-
-Three limits, all shared by a whole delegation tree rather than per run:
-
-- **Hops** (`AGENTTEAM_MAX_AGENT_HOPS`, default 10) — one budget for the tree, so a
-  child cannot reset what its parent was already spending.
-- **Cycles** — a target already waiting in the chain is refused, catching A→B→A one
-  hop before it becomes an A↔B ping-pong.
-- **Wall clock** (`AGENTTEAM_TASK_DEADLINE_SECONDS`, default 600) — one clock for the
-  tree. Per-run timeouts multiply: ten nested runs at 60s each is ten minutes.
-
-A refusal reaches the agent as a tool error it can work around, not an exception that
-kills the run.
-
-These limits are durable, not just in-memory. A task the worker picks up later — a
-woken notification, or a rejected task re-queued — rebuilds its budget from the
-database: hops counted from the agent-to-agent messages already in the tree, the chain
-from task ancestry, and the deadline measured from the root task's creation. Without
-that, every woken task would reset the budget.
-
-Set `AGENTTEAM_WAKE_ON_NOTIFY=false` to make notifications inert records instead.
-
-### Cost attribution
-
-`GET /api/tasks/{id}` and `/trace` report the task's own spend **and** a `tree`
-rollup covering every delegated child, broken down per agent and per model. Reporting
-only the root understates the work by whatever the delegation cost.
-
-## Verifying the live API
-
-Every test in this project runs without an API key: most replace the model with a
-scripted object, and the contract suite drives the real Anthropic SDK over real HTTP
-against a local server speaking the Messages API wire format. Together they prove the
-request is well formed, the tool schemas are valid, and the response parses.
-
-What they cannot prove is that Anthropic's service accepts it. One command does — and
-it has been run:
-
-> **Verified 2026-09-09.** `claude-haiku-4-5` accepted the request with the real system
-> prompt and all seven tool schemas, returned `stop_reason: end_turn`, and the response
-> parsed into the fields the budget and cost accounting read. 2,736 input tokens,
-> \$0.002756.
-
-```bash
-python -m app.cli preflight --dry-run  # show the request and estimate, send nothing
-python -m app.cli preflight            # one small real call, ~$0.012 on Opus
-```
-
-The request shape is what is being verified, and that is model-independent — so the
-cheapest model proves the same thing, with the same system prompt and the same seven
-tool schemas:
+Only a live call proves Anthropic accepts it, and one command does that:
 
 ```bash
 python -m app.cli preflight --model claude-haiku-4-5 --effort off   # ~$0.002
 ```
 
-`--effort off` omits `output_config`, which smaller and older models reject outright.
-
-## Running an agent
-
-```bash
-python -m app.cli run --agent backend --task "Create a FastAPI endpoint that returns a list of books from a hardcoded list, with a Pydantic response model."
-```
-
-Output lands in `workspace/`. Inspect the trace with:
-
-```bash
-python -m app.cli show --task <task_id>
-```
-
-## Running the API
-
-On the host:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-Or with Compose, which also builds the sandbox image first:
-
-```bash
-docker compose up --build
-```
-
-Compose mounts the host Docker socket so the API can create sibling sandbox
-containers. That gives the API container control of the host daemon, so read the
-comment at the top of `docker-compose.yml` before using it. The trust boundary is
-unchanged: AgentTeam's own code is trusted, agent-generated code is not, and agent
-code still runs only in the locked-down sibling container.
-
-## Configuration
-
-Agent identity is data, not code. Each agent is one YAML file in `config/agents/`:
-
-```yaml
-key: backend
-display_name: Ada
-model: claude-opus-5
-role: API and business logic
-system_prompt: |
-  ...
-tools: [read_file, write_file, list_files, run_command]
-```
-
-Changing an agent's model is a one-line edit. Adding an agent is a new file. Swapping the whole
-roster for a different team — research, data — is a config change, not a rewrite.
-
-## Sandboxing
-
-Agents get a `run_command` tool. It is constrained by the runtime, not by the system prompt.
-
-**Default (`AGENTTEAM_SANDBOX_MODE=docker`):** every command runs in a disposable container —
-`--rm`, `--network=none`, non-root user, read-only root filesystem, memory and PID limits, with
-`workspace/` bind-mounted as the only writable path. The container is killed on timeout.
-
-**Why a container and not just an allow-list:** the allow-list includes `python`, `pip`, `npm`, and
-`git`. Each of those independently grants arbitrary code execution — `python -c "import os; ..."` is
-a one-command escape, `pip` and `npm` execute code at install time, and `git` aliases of the form
-`!sh -c '...'` run arbitrary shell. An allow-list containing those four is not a security boundary.
-The container is the boundary; path resolution and the allow-list are defense in depth on top of it.
-
-**`AGENTTEAM_SANDBOX_MODE=subprocess`** runs commands directly on the host with only the path checks,
-allow-list, timeout, and process-group kill. It exists for environments without Docker. It is
-**not** a security boundary against adversarial output, for the reasons above. Do not use it to run
-agents you do not trust.
-
-### Threat model
-
-| Protects against | Does not protect against |
-|---|---|
-| Reads and writes outside `workspace/` (path resolution, symlink and `..` escape) | A container escape (0-day in the container runtime) |
-| Network exfiltration from agent code (`--network=none` by default) | Anything you enable by setting `AGENTTEAM_SANDBOX_NETWORK=true` |
-| Runaway processes (wall-clock timeout, memory and PID caps) | Filling `workspace/` with junk — it is writable by design |
-| Privilege escalation on the host (non-root, read-only rootfs, no added capabilities) | Host compromise in `subprocess` mode |
-
-## Budget control
-
-Every task is capped on three axes, all configurable: tool-use iterations (default 25), total
-input+output tokens (default 500k), and inter-agent message hops (default 10). Cost is accumulated
-from the `usage` field of every API response using the per-MTok rates in `backend/app/core/pricing`.
-When a limit trips the task halts with status `budget_exceeded` and records which limit and why.
+---
 
 ## Layout
 
 ```
 backend/app/
-  api/       FastAPI routers
-  agents/    agent runtime, tools, sandbox, config loader
-  models/    SQLAlchemy models
-  schemas/   Pydantic schemas
-  core/      config, logging, db session
-config/agents/   one YAML per agent
-workspace/       agent sandbox (gitignored)
-docker/          sandbox runtime image
+  agents/     runtime, message bus, delegation, sandbox, tools
+  api/        REST + WebSocket
+  events/     typed event schemas and the fan-out bus
+  models/     SQLAlchemy models
+  workers/    the per-agent task queue
+config/
+  teams/      one directory per roster
+  pricing.yaml
+frontend/src/
+  components/agent/   the characters and their state machine
+  scenes/             team room, task board
+  store/              Zustand + the pure event reducer
+docker/       sandbox image, API image, web image, nginx
+docs/         ARCHITECTURE, CREATING_A_TEAM, BUILD_LOG
 ```
+
+---
 
 ## Development
 
 ```bash
-pytest                       # unit tests (no Docker needed)
-pytest -m integration        # container tests (needs a Docker daemon)
-ruff check . && black --check .
+python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+pytest                       # unit tests, no Docker needed
+pytest -m integration        # container tests, needs a daemon
+ruff check . && black --check . && mypy
+
+cd frontend && npm install
+npm test && npm run typecheck && npm run lint
 ```
 
-CI runs the same three gates on every push and pull request — lint, the full
-test suite on Python 3.11/3.12/3.13 with the sandbox image built so the
-container tests actually execute, and a `docker compose config` validation. No
-test requires an API key; a test that needed one would spend money in CI.
+CI runs all of it on every push, plus building all three images and checking the
+API image reports healthy.
+
+---
+
+## Configuration
+
+Every setting, with defaults and what it does, is documented in
+[`.env.example`](.env.example). The ones worth knowing:
+
+| Variable | Default | |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Required for live runs. Read from the environment only, never logged. |
+| `AGENTTEAM_TEAM` | `software` | Which roster to run. |
+| `AGENTTEAM_SANDBOX_MODE` | `docker` | `subprocess` runs on the host — **not** a security boundary. |
+| `AGENTTEAM_MAX_AGENT_HOPS` | `10` | Delegation hops per tree. |
+| `AGENTTEAM_TASK_DEADLINE_SECONDS` | `600` | Wall clock per tree. |
+| `AGENTTEAM_WAKE_ON_NOTIFY` | `true` | Whether `send_message` queues work for the recipient. |
