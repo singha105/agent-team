@@ -19,6 +19,7 @@ import {
   type Bubble,
   type LiveEntry,
   type RoomState,
+  type TaskView,
 } from "./reducer";
 
 interface TeamState extends RoomState {
@@ -187,6 +188,28 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     stream = null;
   },
 }));
+
+/**
+ * Tasks for one agent, newest first.
+ *
+ * A plain function over an already-selected record, not a Zustand selector.
+ * Selecting a freshly built array from the store would give React a new
+ * snapshot on every render and loop forever; callers select the stable `tasks`
+ * record and derive with this inside a useMemo.
+ *
+ * Reads the event-mirrored record rather than the REST list because the list is
+ * only refetched on demand — a task an agent creates by delegating would
+ * otherwise never appear, and the panel would claim the agent had done nothing.
+ */
+export function agentTasksFrom(
+  tasks: Record<number, TaskView>,
+  agentKey: string | null,
+): TaskView[] {
+  if (agentKey === null) return [];
+  return Object.values(tasks)
+    .filter((task) => task.agentKey === agentKey)
+    .sort((a, b) => b.id - a.id);
+}
 
 /** Selector: live entries for one task, newest last. */
 export const selectLive = (taskId: number | null) => (state: TeamState): LiveEntry[] =>
