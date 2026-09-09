@@ -8,6 +8,7 @@ after the config changes. Rows are synced from YAML, never edited by hand.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -15,6 +16,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.db import Base
 from app.models.enums import AgentStatus
 from app.models.timestamps import utcnow
+
+if TYPE_CHECKING:  # pragma: no cover - resolved by SQLAlchemy at runtime
+    from app.models.task import Task
 
 
 class Agent(Base):

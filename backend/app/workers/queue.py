@@ -19,6 +19,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from anthropic import AsyncAnthropic
 from sqlalchemy import select
 
 from app.agents.config_loader import AgentConfigError, get_agent_config
@@ -47,7 +48,7 @@ class TaskWorkerPool:
         self,
         settings: Settings | None = None,
         bus: EventBus | None = None,
-        client_factory: Callable[[str], object] | None = None,
+        client_factory: Callable[[str], AsyncAnthropic] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.bus = bus or get_event_bus()

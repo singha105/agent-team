@@ -31,6 +31,9 @@ jobs:
       - name: black
         run: black --check .
 
+      - name: mypy
+        run: mypy
+
   test:
     name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -105,8 +108,8 @@ jobs:
         # drifting back without anyone noticing.
         run: npm audit --audit-level=high
 
-  compose:
-    name: compose config
+  images:
+    name: images
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -115,3 +118,35 @@ jobs:
         run: docker compose config --quiet
         env:
           ANTHROPIC_API_KEY: ci-placeholder
+
+      # Built, not just parsed. A Dockerfile that only type-checks is a
+      # Dockerfile nobody has run, and the exit criterion is that a clean clone
+      # comes up with one command.
+      - name: Build the sandbox runtime image
+        run: docker build -t agentteam-runtime:latest docker/
+
+      - name: Build the API image
+        run: docker build -f docker/backend.Dockerfile -t agentteam-api:ci .
+
+      - name: Build the web image
+        run: docker build -f docker/frontend.Dockerfile -t agentteam-web:ci .
+
+      - name: The API image starts and reports healthy
+        run: |
+          docker run -d --name api-smoke \
+            -e ANTHROPIC_API_KEY=ci-placeholder \
+            -e AGENTTEAM_SANDBOX_MODE=subprocess \
+            -p 8000:8000 agentteam-api:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
+              echo "healthy after ${i}s"
+              curl -sS http://127.0.0.1:8000/health
+              docker rm -f api-smoke
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the API image never became healthy"
+          docker logs api-smoke
+          docker rm -f api-smoke
+          exit 1

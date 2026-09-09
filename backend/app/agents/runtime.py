@@ -162,7 +162,9 @@ class AgentRuntime:
         # Optional so the runtime stays usable from the CLI and from tests that
         # do not care about streaming.
         self.bus = bus
-        self._agent_status = AgentStatus.IDLE
+        # Held as a plain string: statuses cross the wire as strings and a
+        # value from a newer backend must not fail an enum lookup here.
+        self._agent_status: str = AgentStatus.IDLE
         # None on a root run; a child run inherits its parent's tree.
         self.delegation = delegation
         # How a child run gets its own model client. Without it a delegated run
@@ -396,6 +398,8 @@ class AgentRuntime:
     # -- tool execution ----------------------------------------------------
 
     def _tool_context(self, task: Task, iteration: int) -> ToolContext:
+        # run() always establishes a context before any tool can be dispatched.
+        assert self.delegation is not None
         return ToolContext(
             agent_key=self.config.key,
             task=task,

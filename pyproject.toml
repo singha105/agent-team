@@ -21,6 +21,7 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "mypy>=1.13",
     "ruff>=0.8",
     "black>=24.10",
     "httpx>=0.27",
@@ -63,6 +64,17 @@ extend-immutable-calls = [
     "fastapi.Body",
     "fastapi.Header",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["backend/app"]
+ignore_missing_imports = true
+# Not --strict: this codebase leans on SQLAlchemy and Pydantic, whose plugins
+# do most of the interesting typing. Turning on strict mode here would generate
+# noise about their machinery rather than finding bugs in ours.
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]

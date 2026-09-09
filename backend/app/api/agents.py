@@ -28,8 +28,9 @@ async def list_agents(session: AsyncSession = Depends(get_db)) -> list[AgentOut]
 
     rows = {row.key: row for row in (await session.execute(select(Agent))).scalars().all()}
 
-    queued_counts = dict(
-        (
+    queued_counts: dict[str, int] = {
+        key: count
+        for key, count in (
             await session.execute(
                 select(Agent.key, func.count(Task.id))
                 .join(Task, Task.assigned_agent_id == Agent.id)
@@ -37,10 +38,11 @@ async def list_agents(session: AsyncSession = Depends(get_db)) -> list[AgentOut]
                 .group_by(Agent.key)
             )
         ).all()
-    )
+    }
 
-    active = dict(
-        (
+    active: dict[str, int] = {
+        key: task_id
+        for key, task_id in (
             await session.execute(
                 select(Agent.key, func.max(Task.id))
                 .join(Task, Task.assigned_agent_id == Agent.id)
@@ -48,7 +50,7 @@ async def list_agents(session: AsyncSession = Depends(get_db)) -> list[AgentOut]
                 .group_by(Agent.key)
             )
         ).all()
-    )
+    }
 
     roster: list[AgentOut] = []
     for key, config in sorted(configs.items()):

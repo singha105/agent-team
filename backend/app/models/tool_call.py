@@ -9,12 +9,16 @@ crash or a hard kill — and that is deliberately visible in the trace.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 from app.models.timestamps import utcnow
+
+if TYPE_CHECKING:  # pragma: no cover - resolved by SQLAlchemy at runtime
+    from app.models.task import Task
 
 
 class ToolCall(Base):

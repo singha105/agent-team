@@ -124,6 +124,4 @@ EVENT_MODELS: tuple[type[BaseEvent], ...] = (
     UsageUpdated,
 )
 
-EVENT_TYPES: tuple[str, ...] = tuple(
-    m.model_fields["type"].default for m in EVENT_MODELS  # type: ignore[misc]
-)
+EVENT_TYPES: tuple[str, ...] = tuple(m.model_fields["type"].default for m in EVENT_MODELS)

@@ -8,12 +8,16 @@ per-task token budget.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 from app.models.timestamps import utcnow
+
+if TYPE_CHECKING:  # pragma: no cover - resolved by SQLAlchemy at runtime
+    from app.models.task import Task
 
 
 class Usage(Base):

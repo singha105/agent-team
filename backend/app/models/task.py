@@ -7,6 +7,7 @@ sub-task to another agent. In Phase 1 it is always NULL.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -14,6 +15,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.db import Base
 from app.models.enums import HUMAN, TaskStatus
 from app.models.timestamps import utcnow
+
+if TYPE_CHECKING:  # pragma: no cover - resolved by SQLAlchemy at runtime
+    from app.models.agent import Agent
+    from app.models.message import Message
+    from app.models.tool_call import ToolCall
+    from app.models.usage import Usage
 
 
 class Task(Base):
