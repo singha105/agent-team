@@ -144,8 +144,10 @@ def test_config_is_immutable() -> None:
 
 
 def test_shipped_backend_config_is_valid() -> None:
-    """The real config/agents/backend.yaml must load and match the spec."""
-    config = load_agent_config("backend", Path(__file__).resolve().parents[2] / "config/agents")
+    """The real config/teams/<team>/backend.yaml must load and match the spec."""
+    config = load_agent_config(
+        "backend", Path(__file__).resolve().parents[2] / "config/teams/software"
+    )
     assert config.key == "backend"
     assert config.model == "claude-opus-5"
     assert set(config.tools) == {
@@ -157,7 +159,7 @@ def test_shipped_backend_config_is_valid() -> None:
         "ask_agent",
         "append_project_context",
     }
-    assert config.resolve_system_prompt(Path("config/agents")).strip()
+    assert config.resolve_system_prompt(Path("config/teams/software")).strip()
 
 
 def test_every_shipped_agent_encodes_the_handoff_protocol() -> None:
@@ -165,7 +167,7 @@ def test_every_shipped_agent_encodes_the_handoff_protocol() -> None:
     missing one is asked for, not invented."""
     from app.agents.config_loader import load_all_agent_configs
 
-    directory = Path(__file__).resolve().parents[2] / "config/agents"
+    directory = Path(__file__).resolve().parents[2] / "config/teams/software"
     configs = load_all_agent_configs(directory)
     assert set(configs) == {"backend", "database", "devops", "frontend"}
 

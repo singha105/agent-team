@@ -595,7 +595,7 @@ class AgentRuntime:
         except anthropic.NotFoundError as exc:
             raise AgentRuntimeError(
                 f"model {self.config.model!r} was not found. Check the `model` field in "
-                f"config/agents/{self.config.key}.yaml."
+                f"config/teams/software/{self.config.key}.yaml."
             ) from exc
         except anthropic.AuthenticationError as exc:
             raise AgentRuntimeError(

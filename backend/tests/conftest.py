@@ -94,7 +94,7 @@ requires_docker = pytest.mark.skipif(not docker_available(), reason="needs a run
 # Phase 2: API, worker and event-stream fixtures
 # --------------------------------------------------------------------------
 
-REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "agents"
+REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "teams" / "software"
 
 
 @pytest.fixture

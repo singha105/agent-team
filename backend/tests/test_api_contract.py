@@ -32,7 +32,7 @@ from tests.wire_server import (
     tool_use_response,
 )
 
-REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "agents"
+REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "teams" / "software"
 
 
 @pytest.fixture
@@ -452,7 +452,7 @@ def test_the_cost_estimate_does_not_undershoot() -> None:
     from app.agents.config_loader import load_agent_config
     from app.agents.tools import build_toolset
 
-    directory = P(__file__).resolve().parents[2] / "config" / "agents"
+    directory = P(__file__).resolve().parents[2] / "config" / "teams" / "software"
     config = load_agent_config("backend", directory)
     system = config.resolve_system_prompt(directory)
     schemas, _ = build_toolset(config.tools)

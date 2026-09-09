@@ -27,7 +27,7 @@ from app.workers import queue as queue_module
 from app.workers.queue import TaskWorkerPool
 from tests.fakes import FakeClient, FakeResponse, text_block, tool_use_block
 
-REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "agents"
+REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "teams" / "software"
 AGENT_KEYS = ["backend", "database", "devops", "frontend"]
 
 

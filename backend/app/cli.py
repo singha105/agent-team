@@ -247,7 +247,7 @@ async def cmd_preflight(args: argparse.Namespace) -> int:
     except anthropic.NotFoundError:
         print(
             f"FAILED  model {model!r} was not found. Check --model, or the `model` "
-            f"field in config/agents/{config.key}.yaml.",
+            f"field in config/teams/software/{config.key}.yaml.",
             file=sys.stderr,
         )
         return 1

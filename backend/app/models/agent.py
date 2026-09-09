@@ -1,4 +1,4 @@
-"""Agent — the DB projection of a config/agents/*.yaml file.
+"""Agent — the DB projection of a config/teams/<team>/*.yaml file.
 
 The YAML is the source of truth. Rows here exist so that tasks, messages and
 usage can foreign-key to a stable id, and so a run can be reconstructed even

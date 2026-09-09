@@ -1,4 +1,4 @@
-"""Load and validate agent definitions from config/agents/*.yaml.
+"""Load and validate agent definitions from config/teams/<team>/*.yaml.
 
 The runtime never hardcodes an agent. Everything that distinguishes one agent
 from another — name, role, model, prompt, tool grants, avatar — comes from here.

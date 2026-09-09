@@ -29,7 +29,7 @@ import os  # noqa: E402
 WORKDIR = Path(tempfile.mkdtemp(prefix="agentteam-demo-"))
 (WORKDIR / "workspace").mkdir()
 (WORKDIR / "data").mkdir()
-shutil.copytree(REPO / "config" / "agents", WORKDIR / "agents")
+shutil.copytree(REPO / "config" / "teams" / "software", WORKDIR / "agents")
 
 os.environ.update(
     AGENTTEAM_WORKSPACE_ROOT=str(WORKDIR / "workspace"),

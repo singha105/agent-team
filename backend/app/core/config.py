@@ -38,9 +38,14 @@ class Settings(BaseSettings):
     # --- Paths -------------------------------------------------------------
     db_path: Path = Field(default=Path("data/agentteam.db"), alias="AGENTTEAM_DB_PATH")
     workspace_root: Path = Field(default=Path("workspace"), alias="AGENTTEAM_WORKSPACE_ROOT")
-    agent_config_dir: Path = Field(
-        default=Path("config/agents"), alias="AGENTTEAM_AGENT_CONFIG_DIR"
-    )
+    # A team is a directory of agent YAML files. Selecting a different one is
+    # the whole mechanism for swapping the roster — no code path knows how many
+    # agents there are or what they are called.
+    team: str = Field(default="software", alias="AGENTTEAM_TEAM")
+    teams_dir: Path = Field(default=Path("config/teams"), alias="AGENTTEAM_TEAMS_DIR")
+    # Escape hatch: point straight at a directory of agent files, bypassing the
+    # team layout. Tests use it; nothing else needs to.
+    agent_config_dir: Path | None = Field(default=None, alias="AGENTTEAM_AGENT_CONFIG_DIR")
     pricing_path: Path = Field(default=Path("config/pricing.yaml"), alias="AGENTTEAM_PRICING_PATH")
     # Only set when AgentTeam itself runs inside a container. The sandbox's
     # --volume flag is interpreted by the *host* Docker daemon, so it must name
@@ -126,7 +131,17 @@ class Settings(BaseSettings):
 
     @property
     def agent_configs(self) -> Path:
-        return self._resolve(self.agent_config_dir)
+        """Where this run's agent definitions live."""
+        if self.agent_config_dir is not None:
+            return self._resolve(self.agent_config_dir)
+        return self._resolve(self.teams_dir) / self.team
+
+    @property
+    def available_teams(self) -> list[str]:
+        directory = self._resolve(self.teams_dir)
+        if not directory.is_dir():
+            return []
+        return sorted(p.name for p in directory.iterdir() if p.is_dir())
 
     @property
     def pricing_file(self) -> Path:

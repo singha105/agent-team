@@ -22,7 +22,7 @@ from app.core import db as db_module
 from app.models import HUMAN, Agent, Message, MessageType, Task, TaskStatus
 from tests.fakes import FakeClient, FakeResponse, text_block, tool_use_block
 
-REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "agents"
+REAL_AGENT_CONFIGS = Path(__file__).resolve().parents[2] / "config" / "teams" / "software"
 
 
 @pytest.fixture
