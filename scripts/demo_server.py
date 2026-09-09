@@ -40,10 +40,10 @@ os.environ.update(
 )
 
 import uvicorn  # noqa: E402
+from fakes import FakeClient, FakeResponse, text_block, tool_use_block  # noqa: E402
 
 from app.core import db as dbm  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
-from fakes import FakeClient, FakeResponse, text_block, tool_use_block  # noqa: E402
 
 get_settings.cache_clear()
 
@@ -72,7 +72,8 @@ def _slow(client: FakeClient, delay: float) -> FakeClient:
     original = client.messages.create
 
     async def paced(**kwargs):
-        await asyncio.sleep(delay + random.random() * delay)
+        # noqa: S311 — jitter for a demo's pacing, not a security decision.
+        await asyncio.sleep(delay + random.random() * delay)  # noqa: S311
         return await original(**kwargs)
 
     client.messages.create = paced  # type: ignore[method-assign]
@@ -171,9 +172,7 @@ def build_scripts(delay: float):
             FakeResponse([text_block(SCHEMA)], "end_turn", 2700, 210),
         ],
         "frontend": [
-            FakeResponse(
-                [tool_use_block("list_files", {"path": "."}, "l1")], "tool_use", 2100, 90
-            ),
+            FakeResponse([tool_use_block("list_files", {"path": "."}, "l1")], "tool_use", 2100, 90),
             FakeResponse(
                 [
                     text_block(
@@ -182,7 +181,8 @@ def build_scripts(delay: float):
                     )
                 ],
                 "end_turn",
-                2300, 140,
+                2300,
+                140,
             ),
         ],
     }
@@ -225,7 +225,9 @@ async def main() -> None:
     await dbm.dispose_engine()
 
     bus = EventBus()
-    pool = TaskWorkerPool(settings=get_settings(), bus=bus, client_factory=build_scripts(args.delay))
+    pool = TaskWorkerPool(
+        settings=get_settings(), bus=bus, client_factory=build_scripts(args.delay)
+    )
     queue_module._pool = pool
 
     import app.api.tasks as tasks_api
