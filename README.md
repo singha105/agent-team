@@ -191,9 +191,19 @@ request is well formed, the tool schemas are valid, and the response parses.
 What they cannot prove is that Anthropic's service accepts it. One command does:
 
 ```bash
-python -m app.cli preflight            # one small real call, cost stated up front
 python -m app.cli preflight --dry-run  # show the request and estimate, send nothing
+python -m app.cli preflight            # one small real call, ~$0.012 on Opus
 ```
+
+The request shape is what is being verified, and that is model-independent — so the
+cheapest model proves the same thing, with the same system prompt and the same seven
+tool schemas:
+
+```bash
+python -m app.cli preflight --model claude-haiku-4-5 --effort off   # ~$0.002
+```
+
+`--effort off` omits `output_config`, which smaller and older models reject outright.
 
 ## Running an agent
 

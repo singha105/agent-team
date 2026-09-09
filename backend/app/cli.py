@@ -182,8 +182,15 @@ async def cmd_preflight(args: argparse.Namespace) -> int:
 
     system = config.resolve_system_prompt(settings.agent_configs)
     schemas, _ = build_toolset(config.tools)
-    request = {
-        "model": config.model,
+
+    # The point of this check is that the *request shape* is accepted, which is
+    # model-independent. Overriding the model lets that be proven on the
+    # cheapest one available — roughly a fifth of a cent on Haiku against about
+    # a penny on Opus — without weakening what is verified: same system prompt,
+    # same seven tool schemas, same wire format.
+    model = args.model or config.model
+    request: dict = {
+        "model": model,
         "max_tokens": args.max_tokens,
         "system": system,
         "messages": [
@@ -193,18 +200,25 @@ async def cmd_preflight(args: argparse.Namespace) -> int:
             }
         ],
         "tools": schemas,
-        "output_config": {"effort": "low"},
     }
+    # output_config is rejected outright by older and smaller models, so it is
+    # omitted rather than sent and hoped for.
+    if args.effort != "off":
+        request["output_config"] = {"effort": args.effort}
 
-    rates = rates_for(config.model)
+    try:
+        rates = rates_for(model)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     approx_input = (len(system) + sum(len(str(t)) for t in schemas)) // 4
     est = (approx_input * rates.input + args.max_tokens * rates.output) / 1_000_000
 
     print(_rule("preflight"))
     print(f"agent      {config.display_name} ({config.key})")
-    print(f"model      {config.model}")
+    print(f"model      {model}" + ("  (override)" if args.model else ""))
     print(f"tools      {len(schemas)} schemas: {', '.join(t['name'] for t in schemas)}")
-    print(f"effort     low   max_tokens {args.max_tokens}")
+    print(f"effort     {args.effort}   max_tokens {args.max_tokens}")
     print(f"est. cost  under ${est:.4f} (~{approx_input:,} input tokens)")
     print(_rule())
 
@@ -226,8 +240,8 @@ async def cmd_preflight(args: argparse.Namespace) -> int:
         return 1
     except anthropic.NotFoundError:
         print(
-            f"FAILED  model {config.model!r} was not found. Check the `model` field in "
-            f"config/agents/{config.key}.yaml.",
+            f"FAILED  model {model!r} was not found. Check --model, or the `model` "
+            f"field in config/agents/{config.key}.yaml.",
             file=sys.stderr,
         )
         return 1
@@ -245,7 +259,7 @@ async def cmd_preflight(args: argparse.Namespace) -> int:
         await client.close()
 
     usage = TokenUsage.from_response_usage(response.usage)
-    cost = estimate_cost_usd(config.model, usage)
+    cost = estimate_cost_usd(model, usage)
     text = "".join(b.text for b in response.content if b.type == "text").strip()
 
     print("OK   request accepted and response parsed")
@@ -307,6 +321,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     preflight.add_argument("--agent", default="backend", help="agent to test with")
+    preflight.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "override the agent's model. The request shape is what is being verified "
+            "and that is model-independent, so the cheapest model proves the same "
+            "thing: --model claude-haiku-4-5 --effort off costs about $0.002."
+        ),
+    )
+    preflight.add_argument(
+        "--effort",
+        default="low",
+        choices=["low", "medium", "high", "xhigh", "max", "off"],
+        help="'off' omits output_config, which smaller and older models reject",
+    )
     preflight.add_argument(
         "--max-tokens", type=int, default=32, help="response cap, kept small to bound cost"
     )

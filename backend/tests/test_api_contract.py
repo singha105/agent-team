@@ -380,3 +380,49 @@ def test_the_validator_accepts_a_correct_tool_use_pair() -> None:
         ],
     }
     assert validate_request(good) is None
+
+
+async def test_preflight_can_verify_on_the_cheapest_model(wire_settings, monkeypatch) -> None:
+    """The request shape is what is being verified, and that is model-independent.
+
+    Overriding the model lets someone prove it on the cheapest one available
+    without weakening the check: same system prompt, same seven tool schemas,
+    same wire format — about a fifth of a cent instead of a penny.
+    """
+    from app.cli import build_parser, cmd_preflight
+
+    async with running_wire_server([text_response("ready", model="claude-haiku-4-5")]) as (
+        wire,
+        url,
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-local-wire-server")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", url)
+        from app.core import config as cfg
+
+        cfg.get_settings.cache_clear()
+        try:
+            args = build_parser().parse_args(
+                ["preflight", "--model", "claude-haiku-4-5", "--effort", "off"]
+            )
+            assert await cmd_preflight(args) == 0
+        finally:
+            cfg.get_settings.cache_clear()
+
+    sent = wire.requests[0]
+    assert sent["model"] == "claude-haiku-4-5"
+    # Everything that makes the check meaningful is still sent.
+    assert len(sent["tools"]) == 7
+    assert sent["system"]
+    # output_config is omitted, because smaller models reject it outright.
+    assert "output_config" not in sent
+
+
+async def test_preflight_rejects_an_unpriced_model_before_calling(wire_settings) -> None:
+    """A model with no rate entry cannot be costed, and reporting a spend of
+    zero would be worse than refusing."""
+    from app.cli import build_parser, cmd_preflight
+
+    async with running_wire_server([]) as (wire, _url):
+        args = build_parser().parse_args(["preflight", "--model", "claude-not-real", "--dry-run"])
+        assert await cmd_preflight(args) == 2
+        assert wire.requests == []
