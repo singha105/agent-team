@@ -80,6 +80,37 @@ an agent without `run_command` cannot execute anything, whatever its prompt
 says. In the research team, the writer and the researcher have no
 `run_command`, because neither has any business executing code.
 
+Tool grants have a limit, though, and it is worth being honest about it: every
+agent on a *software* team needs to write files. The grant is all-or-nothing, so
+it cannot tell the difference between the backend agent writing `api/books.py`
+— its job — and the same agent writing `db/schema.sql`, which is it taking the
+data agent's work. That is what `writes` is for.
+
+## Lanes: `writes`
+
+```yaml
+writes:
+  - 'api/*'
+  - 'api/**'
+  - 'services/**'
+  - '*.py'
+```
+
+Glob patterns this agent may write to. A write outside them is **refused**, and
+the refusal names the teammate who owns the path, so the agent asks rather than
+retrying under a different filename.
+
+Three rules make this usable rather than obstructive:
+
+- **An agent that declares no `writes` may write anywhere.** The restriction is
+  opt-in, so a one-agent team needs no configuration at all.
+- **An unclaimed path is allowed.** Only crossing into a lane someone else has
+  claimed is refused — otherwise agents would deadlock on any file nobody
+  thought to declare.
+- **Say so in the prompt.** All four software agents have a "Your lane is
+  enforced" section. An agent that hits an unexplained refusal will try to work
+  around it; one that was told the rule hands off instead.
+
 ## Handoffs must reference roles, never names
 
 ```yaml

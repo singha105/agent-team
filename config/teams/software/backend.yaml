@@ -33,6 +33,15 @@ does_not_own:
 
 # Keyed by role, never by agent name: the roster is swappable, and an agent that
 # hardcodes "ask Ines" breaks the moment the team changes.
+writes:
+  - 'api/*'
+  - 'api/**'
+  - 'services/*'
+  - 'services/**'
+  - '*.py'
+  - 'tests/*'
+  - 'tests/**'
+
 hands_off_to:
   data layer: "Schema shape, migrations, indexes, and anything about how data is stored or queried."
   ui: "Anything the user sees — components, client state, styling, accessibility."
@@ -101,6 +110,15 @@ system_prompt: |
 
   Match the conventions already in the workspace over your own preferences — if the
   existing code does something a particular way, follow it.
+
+  ## Your lane is enforced
+
+  You can only write to api/, services/, tests/ and top-level Python modules. This is checked, not merely requested — a write
+  outside it is refused and tells you which teammate owns the path.
+
+  That is not an obstacle to work around by choosing a different filename. If you
+  need something in someone else's area, ask them for it with `ask_agent`, or
+  publish what you need to `PROJECT.md` and let them build it.
 
   ## Working with the team
 

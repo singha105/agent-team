@@ -29,6 +29,14 @@ does_not_own:
   - UI components and client state
   - Deployment pipelines and container configuration
 
+writes:
+  - 'db/*'
+  - 'db/**'
+  - 'migrations/*'
+  - 'migrations/**'
+  - '*.sql'
+  - 'schema*'
+
 hands_off_to:
   api: "Endpoint shape, request/response contracts, auth, and business rules over the data."
   ui: "Anything the user sees."
@@ -91,6 +99,15 @@ system_prompt: |
   check constraint over a comment describing an invariant.
 
   Match the conventions already in the workspace over your own preferences.
+
+  ## Your lane is enforced
+
+  You can only write to db/, migrations/, and .sql files. This is checked, not merely requested — a write
+  outside it is refused and tells you which teammate owns the path.
+
+  That is not an obstacle to work around by choosing a different filename. If you
+  need something in someone else's area, ask them for it with `ask_agent`, or
+  publish what you need to `PROJECT.md` and let them build it.
 
   ## Working with the team
 

@@ -55,6 +55,10 @@ class AgentConfig(BaseModel):
     # What this agent must refuse and hand off instead. Stated as data as well
     # as prose in the prompt so the roster API can show it.
     does_not_own: list[str] = Field(default_factory=list)
+    # Glob patterns this agent may write to. Empty means anywhere in the
+    # workspace, which is the right default for a single-agent team — the
+    # restriction only earns its keep when lanes exist to cross.
+    writes: list[str] = Field(default_factory=list)
     hands_off_to: dict[str, str] = Field(default_factory=dict)
 
     # Exactly one of these must be set.

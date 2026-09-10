@@ -176,6 +176,20 @@ the deadline from the root task's creation.
 A refusal comes back to the agent as a **tool error it can work around**, not an
 exception that kills the run.
 
+### Why lanes are enforced, not requested
+
+Agents drift into each other's work. The system prompts say not to, and a prompt
+is advice — an agent under pressure to finish will write the schema itself
+rather than wait for the data agent.
+
+Tool grants cannot express this. Every agent on a software team needs to write
+files; the grant is all-or-nothing and cannot distinguish the backend agent
+writing `api/books.py` from the same agent writing `db/schema.sql`. So each
+agent declares the paths it owns, a write outside them is refused, and the
+refusal names the teammate to ask. Where a tool grant *is* the right control it
+is used — the research team's writer and researcher have no `run_command`,
+because neither has any business executing code.
+
 ### Why the sandbox allow-list is not the security boundary
 
 The allow-list contains `python`, `pip`, `npm` and `git`. Each of those

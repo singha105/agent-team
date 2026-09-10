@@ -23,6 +23,8 @@ from app.agents.workspace_locks import WorkspaceLocks
 from app.models import TaskStatus, ToolCall
 from tests.fakes import FakeClient, FakeResponse, text_block, tool_use_block
 
+SOFTWARE_TEAM = Path(__file__).resolve().parents[2] / "config" / "teams" / "software"
+
 AGENT_YAML = {
     "key": "backend",
     "display_name": "Ada",
@@ -365,3 +367,101 @@ async def test_retries_are_capped(session, agent, settings, monkeypatch) -> None
     assert "backed-off retries" in result.halt_reason
     # The original call plus exactly the permitted retries.
     assert client.calls == 3
+
+
+# -- agent scope creep -----------------------------------------------------
+
+
+def test_lanes_are_declared_for_every_software_agent() -> None:
+    """Tool grants cannot express this: every agent on a software team needs to
+    write files, and the question is which ones."""
+    from app.agents.config_loader import load_all_agent_configs
+
+    teams = SOFTWARE_TEAM
+    for key, config in load_all_agent_configs(teams).items():
+        assert config.writes, f"{key} declares no lane, so nothing constrains it"
+
+
+def test_an_agent_may_write_in_its_own_lane(settings, monkeypatch) -> None:
+    from app.agents.ownership import may_write
+
+    teams = SOFTWARE_TEAM
+    monkeypatch.setattr(settings, "agent_config_dir", teams)
+
+    allowed, _ = may_write("backend", "api/books.py", settings)
+    assert allowed
+
+    allowed, _ = may_write("database", "migrations/001_init.sql", settings)
+    assert allowed
+
+
+def test_an_agent_may_not_write_another_agents_files(settings, monkeypatch) -> None:
+    """Ada writing api/books.py is her job. Ada writing db/schema.sql is her
+    taking Ines's."""
+    from app.agents.ownership import may_write
+
+    teams = SOFTWARE_TEAM
+    monkeypatch.setattr(settings, "agent_config_dir", teams)
+
+    allowed, refusal = may_write("backend", "db/schema.sql", settings)
+    assert not allowed
+    assert "database" in refusal, "the refusal must name who to ask"
+    assert "ask_agent" in refusal
+
+
+def test_an_unclaimed_path_is_allowed(settings, monkeypatch) -> None:
+    """Only crossing into someone's lane is refused; a shared or new path is
+    not, or agents would deadlock on anything nobody thought to declare."""
+    from app.agents.ownership import may_write
+
+    teams = SOFTWARE_TEAM
+    monkeypatch.setattr(settings, "agent_config_dir", teams)
+
+    allowed, _ = may_write("backend", "NOTES.txt", settings)
+    assert allowed
+
+
+def test_an_agent_with_no_declared_lane_may_write_anywhere(settings, monkeypatch, tmp_path):
+    """The restriction is opt-in, so a one-agent team needs no configuration."""
+    import yaml
+
+    from app.agents import config_loader
+    from app.agents.ownership import may_write
+
+    directory = tmp_path / "solo"
+    directory.mkdir()
+    (directory / "helper.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "key": "helper",
+                "display_name": "Wren",
+                "role": "Does the one thing",
+                "model": "claude-sonnet-5",
+                "avatar_id": "a",
+                "tools": ["write_file"],
+                "system_prompt": "Do the one thing.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "agent_config_dir", directory)
+    config_loader._cached.cache_clear()
+
+    allowed, _ = may_write("helper", "anything/at/all.py", settings)
+    assert allowed
+
+
+async def test_writing_out_of_lane_is_refused_and_explains(settings, monkeypatch, workspace):
+    """End to end through the tool, not just the predicate."""
+    from app.agents.current_agent import set_current_agent
+
+    teams = SOFTWARE_TEAM
+    monkeypatch.setattr(settings, "agent_config_dir", teams)
+    set_current_agent("backend")
+
+    outcome = await write_file("db/schema.sql", "CREATE TABLE oops (id INTEGER);")
+
+    assert outcome.is_error
+    assert outcome.payload["out_of_lane"] is True
+    assert "database" in outcome.content
+    assert not (workspace / "db" / "schema.sql").exists(), "the write happened anyway"

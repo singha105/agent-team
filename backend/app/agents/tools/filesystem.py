@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.agents.current_agent import current_agent
+from app.agents.ownership import may_write
 from app.agents.project_context import PROJECT_FILE, is_project_file
 from app.agents.sandbox import SandboxViolation, resolve_in_workspace, to_workspace_relative
 from app.agents.tools.base import Tool, ToolOutcome, register
@@ -117,6 +118,19 @@ async def write_file(path: str, content: str) -> ToolOutcome:
         target = resolve_in_workspace(path)
     except SandboxViolation as exc:
         return ToolOutcome(content=f"Denied: {exc}", payload={"path": path}, is_error=True)
+
+    # Lanes, enforced rather than requested. The prompts already say to stay in
+    # your lane; an agent under pressure to finish will write the schema itself
+    # anyway. Checked before the sandbox path rules because the refusal is more
+    # useful — it names who to ask.
+    writer = current_agent()
+    allowed, refusal = may_write(writer, path)
+    if not allowed:
+        return ToolOutcome(
+            content=f"Denied: {refusal}",
+            payload={"path": path, "out_of_lane": True, "writer": writer},
+            is_error=True,
+        )
 
     # The shared context is append-only, and an enforcement a neighbouring tool
     # can bypass is not an enforcement. Checked on the resolved path so
