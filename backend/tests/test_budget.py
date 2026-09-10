@@ -159,3 +159,71 @@ def test_summary_reports_every_axis() -> None:
     assert summary["iterations"] == 1
     assert summary["total_tokens"] == 15
     assert summary["estimated_cost_usd"] == 0.5
+
+
+# -- cost ceilings ---------------------------------------------------------
+
+
+def test_cost_ceiling_halts_before_the_next_call() -> None:
+    """The token limits are loop protection; these are the ones that bound
+    spend. A live run reached $4.02 with every other limit behaving exactly as
+    designed, because none of them was denominated in money."""
+    t = BudgetTracker(max_iterations=1000, max_tokens=10_000_000, max_hops=10, max_cost_usd=0.25)
+    t.record_usage(TokenUsage(input_tokens=50_000), 0.25)
+
+    with pytest.raises(BudgetExceeded) as exc:
+        t.check_before_iteration()
+    assert exc.value.limit_name == "cost"
+    assert "$0.25" in str(exc.value)
+
+
+def test_the_tree_ceiling_counts_what_delegation_already_spent() -> None:
+    """A child that only knew its own cost could not enforce a tree limit, and
+    the tree would cost the per-task ceiling times the number of tasks."""
+    child = BudgetTracker(
+        max_iterations=1000,
+        max_tokens=10_000_000,
+        max_hops=10,
+        max_cost_usd=5.0,
+        max_tree_cost_usd=2.0,
+    )
+    # The caller has already spent this much before delegating.
+    child.tree_cost_so_far = 1.9
+    child.record_usage(TokenUsage(input_tokens=1000), 0.15)
+
+    with pytest.raises(BudgetExceeded) as exc:
+        child.check_before_iteration()
+    assert exc.value.limit_name == "delegation tree cost"
+
+
+def test_a_run_under_both_cost_ceilings_proceeds() -> None:
+    t = BudgetTracker(
+        max_iterations=1000,
+        max_tokens=10_000_000,
+        max_hops=10,
+        max_cost_usd=1.0,
+        max_tree_cost_usd=5.0,
+    )
+    t.tree_cost_so_far = 0.5
+    t.record_usage(TokenUsage(input_tokens=1000), 0.2)
+    t.check_before_iteration()
+
+
+def test_cost_ceilings_are_off_when_unset() -> None:
+    """The tracker is used in tests and by the CLI without cost limits; zero
+    must mean 'no ceiling' rather than 'halt immediately'."""
+    t = BudgetTracker(max_iterations=10, max_tokens=1000, max_hops=5)
+    t.record_usage(TokenUsage(input_tokens=10), 99.0)
+    t.check_before_iteration()
+
+
+def test_the_cheapest_explanation_is_named_first() -> None:
+    """When several ceilings are close, the message should say 'iteration'
+    rather than 'cost' — one is a loop, the other is a bill."""
+    t = BudgetTracker(max_iterations=1, max_tokens=10_000_000, max_hops=10, max_cost_usd=0.01)
+    t.record_iteration()
+    t.record_usage(TokenUsage(input_tokens=1000), 5.0)
+
+    with pytest.raises(BudgetExceeded) as exc:
+        t.check_before_iteration()
+    assert exc.value.limit_name == "iteration"

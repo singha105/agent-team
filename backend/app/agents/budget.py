@@ -18,13 +18,15 @@ from app.core.pricing import TokenUsage
 class BudgetExceeded(Exception):
     """Raised when a task exceeds one of its ceilings."""
 
-    def __init__(self, limit_name: str, limit: int, actual: int) -> None:
+    def __init__(self, limit_name: str, limit: float, actual: float, unit: str = "") -> None:
         self.limit_name = limit_name
         self.limit = limit
         self.actual = actual
+        rendered_limit = f"{unit}{limit:,.2f}" if unit else f"{limit:,.0f}"
+        rendered_actual = f"{unit}{actual:,.2f}" if unit else f"{actual:,.0f}"
         super().__init__(
-            f"budget exceeded: {limit_name} limit of {limit} reached (at {actual}). "
-            f"The task was halted before making another API call."
+            f"budget exceeded: {limit_name} limit of {rendered_limit} reached "
+            f"(at {rendered_actual}). The task was halted before making another API call."
         )
 
 
@@ -35,6 +37,11 @@ class BudgetTracker:
     max_iterations: int
     max_tokens: int
     max_hops: int
+    max_cost_usd: float = 0.0
+    max_tree_cost_usd: float = 0.0
+    # Set for a delegated run so the tree's spend so far counts against the
+    # tree ceiling; a child that only knew its own cost could not enforce one.
+    tree_cost_so_far: float = 0.0
 
     iterations: int = 0
     hops: int = 0
@@ -53,6 +60,16 @@ class BudgetTracker:
             raise BudgetExceeded("token", self.max_tokens, self.total_tokens)
         if self.hops >= self.max_hops:
             raise BudgetExceeded("agent hop", self.max_hops, self.hops)
+        # Money last, because the message should name the cheapest explanation
+        # first when several ceilings are close.
+        if self.max_cost_usd and self.cost_usd >= self.max_cost_usd:
+            raise BudgetExceeded("cost", self.max_cost_usd, self.cost_usd, unit="$")
+        if self.max_tree_cost_usd:
+            tree_total = self.tree_cost_so_far + self.cost_usd
+            if tree_total >= self.max_tree_cost_usd:
+                raise BudgetExceeded(
+                    "delegation tree cost", self.max_tree_cost_usd, tree_total, unit="$"
+                )
 
     def record_iteration(self) -> int:
         self.iterations += 1

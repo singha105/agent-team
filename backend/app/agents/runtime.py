@@ -180,6 +180,8 @@ class AgentRuntime:
             max_iterations=config.max_iterations or self.settings.max_iterations,
             max_tokens=config.max_tokens or self.settings.max_tokens_per_task,
             max_hops=self.settings.max_agent_hops,
+            max_cost_usd=self.settings.max_cost_usd_per_task,
+            max_tree_cost_usd=self.settings.max_cost_usd_per_tree,
         )
 
     # -- construction ------------------------------------------------------
@@ -433,7 +435,14 @@ class AgentRuntime:
             client_for=self.client_for,
             wake=self.wake,
         )
-        return await child_runtime.run(child_task)
+        # The child inherits what the tree has already spent, so the tree
+        # ceiling bounds the whole delegation rather than each task separately.
+        child_runtime.budget.tree_cost_so_far = self.budget.tree_cost_so_far + self.budget.cost_usd
+        result = await child_runtime.run(child_task)
+        # Roll the child's spend back up, so the caller's own remaining tree
+        # budget accounts for what the delegation cost.
+        self.budget.tree_cost_so_far += child_runtime.budget.cost_usd
+        return result
 
     async def _invoke_tool(
         self, block: Any, context: ToolContext | None = None

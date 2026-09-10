@@ -66,6 +66,19 @@ class Settings(BaseSettings):
     # --- Budgets -----------------------------------------------------------
     max_iterations: int = Field(default=25, alias="AGENTTEAM_MAX_ITERATIONS")
     max_tokens_per_task: int = Field(default=500_000, alias="AGENTTEAM_MAX_TOKENS_PER_TASK")
+    # Ceilings in the unit people actually care about.
+    #
+    # The token limits are loop protection, not cost control, and the difference
+    # is expensive: 500,000 input tokens is about $2.50 on Opus, and a delegation
+    # tree has one such ceiling per task. A live run reached $4.02 with every
+    # limit behaving exactly as designed, because none of them was denominated
+    # in money. These are.
+    max_cost_usd_per_task: float = Field(
+        default=0.50, gt=0, alias="AGENTTEAM_MAX_COST_USD_PER_TASK"
+    )
+    max_cost_usd_per_tree: float = Field(
+        default=2.00, gt=0, alias="AGENTTEAM_MAX_COST_USD_PER_TREE"
+    )
     max_agent_hops: int = Field(default=10, alias="AGENTTEAM_MAX_AGENT_HOPS")
     # One wall clock for an entire delegation tree. Per-run timeouts multiply:
     # ten nested runs at 60s each is a ten-minute stall, not a one-minute one.
