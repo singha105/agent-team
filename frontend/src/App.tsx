@@ -11,6 +11,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useState } from "react";
 
 import { ConnectionPill } from "./components/ConnectionPill";
+import { ConflictBanner } from "./components/ConflictBanner";
 import { CostMeter } from "./components/CostMeter";
 import { AgentPanel } from "./components/AgentPanel";
 import { BubbleDialog } from "./components/BubbleDialog";
@@ -112,6 +113,7 @@ export function App() {
         </AnimatePresence>
       </main>
 
+      <ConflictBanner />
       <AgentPanel />
       <BubbleDialog />
       <DemoBanner />

@@ -47,6 +47,28 @@ export interface LiveEntry {
   pending?: boolean;
 }
 
+/** An agent backing off before a retry — waiting, not stuck. */
+export interface Waiting {
+  agentKey: string;
+  taskId: number;
+  reason: string;
+  attempt: number;
+  maxAttempts: number;
+  retryInSeconds: number;
+  seq: number;
+}
+
+/** One agent's write replaced another's content. */
+export interface ConflictNotice {
+  id: string;
+  taskId: number;
+  path: string;
+  writer: string;
+  replacedWriter: string;
+  raced: boolean;
+  at: string;
+}
+
 export interface Bubble {
   id: string;
   seq: number;
@@ -67,6 +89,10 @@ export interface RoomState {
   sessionCostUsd: number;
   sessionTokens: number;
   lastSeq: number;
+  /** Keyed by agent: who is currently backing off. */
+  waiting: Record<string, Waiting>;
+  /** Write conflicts, newest last. Kept until dismissed. */
+  conflicts: ConflictNotice[];
 }
 
 export const initialRoomState: RoomState = {
@@ -77,12 +103,16 @@ export const initialRoomState: RoomState = {
   sessionCostUsd: 0,
   sessionTokens: 0,
   lastSeq: 0,
+  waiting: {},
+  conflicts: [],
 };
 
 /** Keep per-task live logs bounded; a long run must not grow without limit. */
 export const MAX_LIVE_ENTRIES = 300;
 /** Bubbles are ephemeral; only the most recent few are ever in flight. */
 export const MAX_BUBBLES = 6;
+/** Conflicts persist until dismissed, but a runaway must not grow forever. */
+export const MAX_CONFLICTS = 20;
 
 function ensureAgent(state: RoomState, key: string): AgentView {
   return (
@@ -125,9 +155,13 @@ export function reduceEvent(state: RoomState, event: AgentTeamEvent): RoomState 
   switch (event.type) {
     case "agent.status_changed": {
       const agent = ensureAgent(state, event.agent_key);
+      // Any status change means the agent got through — clear the wait, or the
+      // room would keep claiming it is backing off long after it recovered.
+      const { [event.agent_key]: _cleared, ...waiting } = state.waiting;
       return {
         ...state,
         lastSeq,
+        waiting,
         agents: {
           ...state.agents,
           [event.agent_key]: {
@@ -139,6 +173,42 @@ export function reduceEvent(state: RoomState, event: AgentTeamEvent): RoomState 
             lastEventAt: event.at,
           },
         },
+      };
+    }
+
+    case "agent.waiting": {
+      return {
+        ...state,
+        lastSeq,
+        waiting: {
+          ...state.waiting,
+          [event.agent_key]: {
+            agentKey: event.agent_key,
+            taskId: event.task_id,
+            reason: event.reason,
+            attempt: event.attempt,
+            maxAttempts: event.max_attempts,
+            retryInSeconds: event.retry_in_seconds,
+            seq: event.seq,
+          },
+        },
+      };
+    }
+
+    case "workspace.conflict": {
+      const notice = {
+        id: `c${event.seq}`,
+        taskId: event.task_id,
+        path: event.path,
+        writer: event.writer,
+        replacedWriter: event.replaced_writer,
+        raced: event.raced,
+        at: event.at,
+      };
+      return {
+        ...state,
+        lastSeq,
+        conflicts: [...state.conflicts, notice].slice(-MAX_CONFLICTS),
       };
     }
 

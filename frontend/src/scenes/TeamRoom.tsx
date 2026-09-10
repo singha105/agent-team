@@ -27,6 +27,7 @@ export function TeamRoom() {
   const roster = useTeamStore((s) => s.roster);
   const agents = useTeamStore((s) => s.agents);
   const bubbles = useTeamStore((s) => s.bubbles);
+  const waiting = useTeamStore((s) => s.waiting);
   const selectedAgent = useTeamStore((s) => s.selectedAgent);
   const selectAgent = useTeamStore((s) => s.selectAgent);
   const dismissBubble = useTeamStore((s) => s.dismissBubble);
@@ -136,6 +137,7 @@ export function TeamRoom() {
                   <Desk
                     agent={agent}
                     status={live?.status ?? agent.status}
+                    waiting={waiting[agent.key] ?? null}
                     hue={theme.hue}
                     variant={theme.variant}
                     selected={selectedAgent === agent.key}

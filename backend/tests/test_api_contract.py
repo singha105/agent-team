@@ -258,11 +258,18 @@ async def test_an_api_error_becomes_an_actionable_failure(
     assert "400" in result.halt_reason
 
 
-async def test_an_unreachable_api_fails_cleanly(session, wire_settings) -> None:
-    """A connection failure must name the cause, not surface as a traceback."""
+async def test_an_unreachable_api_fails_cleanly(session, wire_settings, monkeypatch) -> None:
+    """A connection failure must name the cause, not surface as a traceback.
+
+    Retries are disabled here on purpose: the runtime now backs off before
+    giving up, and waiting out five real delays to assert a message would add
+    twelve seconds to the suite for nothing.
+    """
     from app.agents.config_loader import get_agent_config
 
-    # Nothing is listening here; the SDK retries, then raises a connection error.
+    monkeypatch.setattr(wire_settings, "api_max_retries", 0)
+
+    # Nothing is listening here.
     client = anthropic.AsyncAnthropic(
         api_key="k", base_url="http://127.0.0.1:1", max_retries=0, timeout=2.0
     )

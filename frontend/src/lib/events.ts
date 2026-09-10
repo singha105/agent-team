@@ -16,6 +16,31 @@ export interface AgentStatusChanged {
   task_id: number | null;
 }
 
+export interface AgentWaiting {
+  /** Monotonic per-process sequence number. */
+  seq: number;
+  at: string;
+  type: "agent.waiting";
+  agent_key: string;
+  task_id: number;
+  reason: string;
+  attempt: number;
+  max_attempts: number;
+  retry_in_seconds: number;
+}
+
+export interface WorkspaceConflict {
+  /** Monotonic per-process sequence number. */
+  seq: number;
+  at: string;
+  type: "workspace.conflict";
+  task_id: number;
+  path: string;
+  writer: string;
+  replaced_writer: string;
+  raced: boolean;
+}
+
 export interface TaskCreated {
   /** Monotonic per-process sequence number. */
   seq: number;
@@ -100,6 +125,8 @@ export interface UsageUpdated {
 
 export type AgentTeamEvent =
   | AgentStatusChanged
+  | AgentWaiting
+  | WorkspaceConflict
   | TaskCreated
   | TaskStatusChanged
   | MessageCreated
@@ -109,6 +136,8 @@ export type AgentTeamEvent =
 
 export const EVENT_TYPES = [
   "agent.status_changed",
+  "agent.waiting",
+  "workspace.conflict",
   "task.created",
   "task.status_changed",
   "message.created",

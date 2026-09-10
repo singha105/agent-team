@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,11 +46,13 @@ from app.core.pricing import TokenUsage, UnknownModelError, estimate_cost_usd, r
 from app.events.bus import EventBus
 from app.events.schemas import (
     AgentStatusChanged,
+    AgentWaiting,
     MessageCreated,
     TaskStatusChanged,
     ToolFinished,
     ToolStarted,
     UsageUpdated,
+    WorkspaceConflict,
 )
 from app.models import Agent, AgentStatus, Message, MessageType, Task, TaskStatus, ToolCall, Usage
 
@@ -81,6 +84,35 @@ class RunResult:
 
 
 PREVIEW_CHARS = 240
+
+RETRY_BASE_SECONDS = 1.0
+RETRY_MAX_SECONDS = 60.0
+
+
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    """Exponential backoff with full jitter, honouring retry-after.
+
+    The server knows how long it wants to be left alone better than any formula
+    does, so an explicit retry-after wins. Otherwise full jitter, because a
+    fixed delay makes every concurrent agent retry in the same instant and
+    reproduce the overload that caused the backoff.
+    """
+    response = getattr(exc, "response", None)
+    header = None
+    if response is not None:
+        try:
+            header = response.headers.get("retry-after")
+        except Exception:  # noqa: BLE001 - a malformed header is not worth failing on
+            header = None
+    if header:
+        try:
+            return min(RETRY_MAX_SECONDS, float(header))
+        except (TypeError, ValueError):
+            pass
+
+    ceiling = min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * 2 ** (attempt - 1))
+    # noqa: S311 — jitter for retry pacing, not a security decision.
+    return random.uniform(0, ceiling)  # noqa: S311
 
 
 def _preview(value: Any) -> str:
@@ -195,10 +227,10 @@ class AgentRuntime:
         if self._client is None:
             self._client = anthropic.AsyncAnthropic(
                 api_key=self.settings.require_api_key(),
-                # 429s and overloads are routine under a team of agents running
-                # concurrently. The SDK retries these with exponential backoff
-                # and jitter; raising its cap is the whole fix.
-                max_retries=self.settings.api_max_retries,
+                # Zero, deliberately. _call_api owns the backoff so the wait is
+                # observable; leaving the SDK's retries on as well would
+                # compound the two and multiply the wall time by five.
+                max_retries=0,
                 timeout=self.settings.api_timeout_seconds,
             )
         return self._client
@@ -570,6 +602,18 @@ class AgentRuntime:
                     "is_error": outcome.is_error,
                 }
             )
+            if outcome.payload.get("conflict"):
+                # Detected in write_file, which is context-free by design, so
+                # the runtime is where it becomes an event someone can see.
+                await self._emit(
+                    WorkspaceConflict(
+                        task_id=task_id,
+                        path=str(outcome.payload.get("path", "")),
+                        writer=self.config.key,
+                        replaced_writer=str(outcome.payload.get("replaced_writer") or "unknown"),
+                        raced=bool(outcome.payload.get("raced")),
+                    )
+                )
             await self._emit(
                 ToolFinished(
                     task_id=task_id,
@@ -602,28 +646,89 @@ class AgentRuntime:
             kwargs["output_config"] = {"effort": effort}
         return kwargs
 
-    async def _call_api(self, messages: list[dict[str, Any]], system: str) -> Any:
-        try:
-            return await self.client.messages.create(**self._request_kwargs(messages, system))
-        except anthropic.NotFoundError as exc:
-            raise AgentRuntimeError(
-                f"model {self.config.model!r} was not found. Check the `model` field in "
-                f"config/teams/software/{self.config.key}.yaml."
-            ) from exc
-        except anthropic.AuthenticationError as exc:
-            raise AgentRuntimeError(
-                "ANTHROPIC_API_KEY was rejected. Check the key in your environment."
-            ) from exc
-        except anthropic.RateLimitError as exc:
-            raise AgentRuntimeError(
-                f"rate limited by the API, and still limited after "
-                f"{self.settings.api_max_retries} backed-off retries. The task is halted "
-                "rather than hammering a service that is asking for space; retry it later."
-            ) from exc
-        except anthropic.APIStatusError as exc:
-            raise AgentRuntimeError(f"API error {exc.status_code}: {exc.message}") from exc
-        except anthropic.APIConnectionError as exc:
-            raise AgentRuntimeError(f"could not reach the API: {exc}") from exc
+    async def _call_api(self, messages: list[dict[str, Any]], system: str, task_id: int = 0) -> Any:
+        """One model call, retrying transient failures with visible waits.
+
+        The backoff lives here rather than in the SDK — the client is built with
+        max_retries=0 — for one reason: the SDK retries silently and only
+        surfaces the final failure, so a run patiently waiting out a rate limit
+        is indistinguishable from a run that has hung. The spec asks for that
+        wait to be visible, and it cannot be shown if nothing knows about it.
+        """
+        attempt = 0
+        while True:
+            try:
+                return await self.client.messages.create(**self._request_kwargs(messages, system))
+
+            except (anthropic.RateLimitError, anthropic.InternalServerError) as exc:
+                attempt += 1
+                if attempt > self.settings.api_max_retries:
+                    raise AgentRuntimeError(
+                        f"still failing after {self.settings.api_max_retries} backed-off "
+                        f"retries ({type(exc).__name__}). The task is halted rather than "
+                        "hammering a service asking for space; retry it later."
+                    ) from exc
+
+                delay = _retry_delay(exc, attempt)
+                reason = (
+                    "rate limited"
+                    if isinstance(exc, anthropic.RateLimitError)
+                    else "the API is overloaded"
+                )
+                log.warning(
+                    "[%s] %s; retrying in %.1fs (attempt %d/%d)",
+                    self.config.key,
+                    reason,
+                    delay,
+                    attempt,
+                    self.settings.api_max_retries,
+                )
+                await self._emit(
+                    AgentWaiting(
+                        agent_key=self.config.key,
+                        task_id=task_id,
+                        reason=reason,
+                        attempt=attempt,
+                        max_attempts=self.settings.api_max_retries,
+                        retry_in_seconds=round(delay, 2),
+                    )
+                )
+                await asyncio.sleep(delay)
+
+            except anthropic.APIConnectionError as exc:
+                # A dropped connection is transient in the same way, and worth
+                # the same patience — but capped by the same counter, so a
+                # genuinely unreachable API still fails rather than looping.
+                attempt += 1
+                if attempt > self.settings.api_max_retries:
+                    raise AgentRuntimeError(f"could not reach the API: {exc}") from exc
+
+                delay = _retry_delay(exc, attempt)
+                await self._emit(
+                    AgentWaiting(
+                        agent_key=self.config.key,
+                        task_id=task_id,
+                        reason="cannot reach the API",
+                        attempt=attempt,
+                        max_attempts=self.settings.api_max_retries,
+                        retry_in_seconds=round(delay, 2),
+                    )
+                )
+                await asyncio.sleep(delay)
+
+            # Everything below is a request that will fail identically however
+            # many times it is sent, so it fails immediately.
+            except anthropic.NotFoundError as exc:
+                raise AgentRuntimeError(
+                    f"model {self.config.model!r} was not found. Check the `model` field "
+                    f"in this agent's YAML."
+                ) from exc
+            except anthropic.AuthenticationError as exc:
+                raise AgentRuntimeError(
+                    "ANTHROPIC_API_KEY was rejected. Check the key in your environment."
+                ) from exc
+            except anthropic.APIStatusError as exc:
+                raise AgentRuntimeError(f"API error {exc.status_code}: {exc.message}") from exc
 
     # -- the loop ----------------------------------------------------------
 
@@ -697,7 +802,7 @@ class AgentRuntime:
                 )
 
                 await self.set_agent_status(AgentStatus.THINKING, task.id)
-                response = await self._call_api(messages, system)
+                response = await self._call_api(messages, system, task.id)
 
                 usage = TokenUsage.from_response_usage(response.usage)
                 cost = estimate_cost_usd(self.config.model, usage)

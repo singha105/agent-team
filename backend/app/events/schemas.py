@@ -90,6 +90,29 @@ class ToolFinished(BaseEvent):
     error: str | None = None
 
 
+class AgentWaiting(BaseEvent):
+    """The agent is not stuck — it is backing off before retrying."""
+
+    type: Literal["agent.waiting"] = "agent.waiting"
+    agent_key: str
+    task_id: int
+    reason: str
+    attempt: int
+    max_attempts: int
+    retry_in_seconds: float
+
+
+class WorkspaceConflict(BaseEvent):
+    """One agent's write replaced another agent's content."""
+
+    type: Literal["workspace.conflict"] = "workspace.conflict"
+    task_id: int
+    path: str
+    writer: str
+    replaced_writer: str
+    raced: bool
+
+
 class UsageUpdated(BaseEvent):
     type: Literal["usage.updated"] = "usage.updated"
     task_id: int
@@ -105,6 +128,8 @@ class UsageUpdated(BaseEvent):
 
 AgentTeamEvent = Annotated[
     AgentStatusChanged
+    | AgentWaiting
+    | WorkspaceConflict
     | TaskCreated
     | TaskStatusChanged
     | MessageCreated
@@ -116,6 +141,8 @@ AgentTeamEvent = Annotated[
 
 EVENT_MODELS: tuple[type[BaseEvent], ...] = (
     AgentStatusChanged,
+    AgentWaiting,
+    WorkspaceConflict,
     TaskCreated,
     TaskStatusChanged,
     MessageCreated,

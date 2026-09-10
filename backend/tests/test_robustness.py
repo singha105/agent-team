@@ -237,3 +237,131 @@ async def test_concurrent_agents_do_not_see_each_others_identity() -> None:
 
     await asyncio.gather(*(act(k) for k in ["backend", "database", "devops", "frontend"]))
     assert seen == {k: k for k in ["backend", "database", "devops", "frontend"]}
+
+
+# -- rate limits and overloads ---------------------------------------------
+
+
+def test_retry_delay_honours_retry_after() -> None:
+    """The server knows how long it wants to be left alone better than any
+    formula does."""
+    from app.agents.runtime import _retry_delay
+
+    class Response:
+        headers = {"retry-after": "12"}
+
+    class Limited(Exception):
+        response = Response()
+
+    assert _retry_delay(Limited(), attempt=1) == 12.0
+
+
+def test_retry_delay_backs_off_and_jitters() -> None:
+    """Without jitter every concurrent agent retries in the same instant and
+    reproduces the overload that caused the backoff."""
+    from app.agents.runtime import RETRY_MAX_SECONDS, _retry_delay
+
+    class Bare(Exception):
+        response = None
+
+    samples = {_retry_delay(Bare(), attempt=5) for _ in range(40)}
+    assert len(samples) > 5, "delays are not jittered"
+    assert all(0 <= s <= RETRY_MAX_SECONDS for s in samples)
+
+    late = max(_retry_delay(Bare(), attempt=8) for _ in range(80))
+    early = max(_retry_delay(Bare(), attempt=1) for _ in range(80))
+    assert late > early, "the delay does not grow with the attempt"
+
+
+def test_retry_delay_survives_a_malformed_header() -> None:
+    from app.agents.runtime import _retry_delay
+
+    class Response:
+        headers = {"retry-after": "soon-ish"}
+
+    class Limited(Exception):
+        response = Response()
+
+    assert _retry_delay(Limited(), attempt=1) >= 0
+
+
+async def test_a_rate_limit_is_retried_and_announced(session, agent, settings) -> None:
+    """A run patiently waiting out a rate limit must be distinguishable from a
+    run that has hung — which means something has to know it is waiting."""
+    import anthropic
+    import httpx
+
+    from app.agents.runtime import AgentRuntime
+    from app.events.bus import EventBus
+    from tests.test_runtime import make_task
+
+    limited = anthropic.RateLimitError(
+        "slow down",
+        response=httpx.Response(
+            429, headers={"retry-after": "0"}, request=httpx.Request("POST", "http://x")
+        ),
+        body=None,
+    )
+
+    class FlakyClient:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages = self
+
+        async def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise limited
+            return FakeResponse([text_block("recovered")], "end_turn")
+
+    bus = EventBus()
+    task = await make_task(session, agent)
+    runtime = AgentRuntime(agent, session, settings, client=FlakyClient(), bus=bus)
+
+    result = await runtime.run(task)
+
+    assert result.status == TaskStatus.NEEDS_REVIEW, "the retry did not recover the run"
+
+    waits = [e for e in bus.history() if e.type == "agent.waiting"]
+    assert waits, "the wait was never announced, so the UI could not show it"
+    assert waits[0].reason == "rate limited"
+    assert waits[0].agent_key == agent.key
+    assert waits[0].max_attempts == settings.api_max_retries
+
+
+async def test_retries_are_capped(session, agent, settings, monkeypatch) -> None:
+    """A service that is genuinely down must not be hammered forever."""
+    import anthropic
+    import httpx
+
+    from app.agents.runtime import AgentRuntime
+    from tests.test_runtime import make_task
+
+    monkeypatch.setattr(settings, "api_max_retries", 2)
+
+    class AlwaysLimited:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages = self
+
+        async def create(self, **_kwargs):
+            self.calls += 1
+            raise anthropic.RateLimitError(
+                "no",
+                response=httpx.Response(
+                    429,
+                    headers={"retry-after": "0"},
+                    request=httpx.Request("POST", "http://x"),
+                ),
+                body=None,
+            )
+
+    client = AlwaysLimited()
+    task = await make_task(session, agent)
+
+    result = await AgentRuntime(agent, session, settings, client=client).run(task)
+
+    assert result.status == TaskStatus.FAILED
+    assert "backed-off retries" in result.halt_reason
+    # The original call plus exactly the permitted retries.
+    assert client.calls == 3

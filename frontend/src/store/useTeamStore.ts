@@ -38,6 +38,7 @@ interface TeamState extends RoomState {
   applyEvent: (event: AgentTeamEvent) => void;
   setConnection: (state: ConnectionState, attempt?: number) => void;
   dismissBubble: (id: string) => void;
+  dismissConflict: (id: string) => void;
   openBubbleDetail: (bubble: Bubble | null) => void;
   selectAgent: (key: string | null) => void;
   selectTask: (id: number | null) => void;
@@ -48,6 +49,7 @@ interface TeamState extends RoomState {
   assignTask: (agentKey: string, description: string) => Promise<TaskSummary | null>;
   reviewTask: (id: number, decision: "approve" | "reject", feedback?: string) => Promise<void>;
   bootstrap: () => Promise<void>;
+  reconcile: () => Promise<void>;
   connect: () => void;
   disconnect: () => void;
 }
@@ -77,6 +79,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   setConnection: (connection, attempt = 0) => set({ connection, reconnectAttempt: attempt }),
 
   dismissBubble: (id) => set((state) => ({ bubbles: state.bubbles.filter((b) => b.id !== id) })),
+
+  dismissConflict: (id) =>
+    set((state) => ({ conflicts: state.conflicts.filter((c) => c.id !== id) })),
 
   openBubbleDetail: (bubble) => set({ openBubble: bubble }),
 
@@ -180,6 +185,62 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     set({ loading: false });
   },
 
+  /**
+   * Re-read authoritative state after a gap in the stream.
+   *
+   * Unlike bootstrap this does not set `loading`: the room is already on screen
+   * and blanking it to a spinner because a socket blinked would be worse than
+   * the brief inconsistency it is fixing. Agent statuses are overwritten from
+   * the server rather than merged, because a status we inferred from events we
+   * may not have all of is exactly what cannot be trusted here.
+   */
+  reconcile: async () => {
+    try {
+      const [roster, taskList] = await Promise.all([api.listAgents(), api.listTasks({ limit: 200 })]);
+      set((state) => ({
+        roster,
+        taskList,
+        error: null,
+        agents: roster.reduce(
+          (acc, agent) => ({
+            ...acc,
+            [agent.key]: {
+              key: agent.key,
+              status: agent.status,
+              previousStatus: state.agents[agent.key]?.status ?? null,
+              activeTaskId: agent.active_task_id,
+              statusSeq: (state.agents[agent.key]?.statusSeq ?? 0) + 1,
+              lastEventAt: agent.status_changed_at,
+            },
+          }),
+          {} as typeof state.agents,
+        ),
+        tasks: taskList.reduce(
+          (acc, task) => ({
+            ...acc,
+            [task.id]: {
+              id: task.id,
+              agentKey: task.agent_key,
+              title: task.title,
+              status: task.status,
+              createdBy: task.created_by,
+              attempt: task.attempt,
+              haltReason: task.halt_reason,
+              // Cost accumulates from events; keep what we have rather than
+              // resetting a meter that was counting correctly.
+              costUsd: state.tasks[task.id]?.costUsd ?? 0,
+              tokens: state.tasks[task.id]?.tokens ?? 0,
+              parentTaskId: task.parent_task_id,
+            },
+          }),
+          {} as typeof state.tasks,
+        ),
+      }));
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : "could not reconcile after reconnecting" });
+    }
+  },
+
   connect: () => {
     if (isDemo) {
       if (demoStream) return;
@@ -193,7 +254,21 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     if (stream) return;
     stream = new EventStream({
       onEvent: (event) => get().applyEvent(event),
-      onStateChange: (state, detail) => get().setConnection(state, detail?.attempt ?? 0),
+      onStateChange: (state, detail) => {
+        const previous = get().connection;
+        get().setConnection(state, detail?.attempt ?? 0);
+
+        // Reconcile on every reconnect, not just replay.
+        //
+        // `?since_seq=N` replays what the server still has buffered, which is
+        // bounded — a long disconnection silently falls off the end of that
+        // buffer and the room would then show a state that stopped being true
+        // minutes ago. Refetching is the only way to know the current truth,
+        // and it is cheap next to being confidently wrong.
+        if (state === "open" && previous !== "connecting") {
+          void get().reconcile();
+        }
+      },
     });
     stream.connect();
   },

@@ -20,6 +20,7 @@ import type {
 } from "../lib/events";
 import {
   MAX_BUBBLES,
+  MAX_CONFLICTS,
   MAX_LIVE_ENTRIES,
   initialRoomState,
   reduceEvent,
@@ -247,5 +248,90 @@ describe("purity", () => {
     const state = reduceEvent(initialRoomState, unknown);
     expect(state.lastSeq).toBe(999);
     expect(state.agents).toEqual({});
+  });
+});
+
+
+// -- backing off, and conflicts -------------------------------------------
+
+function waiting(agent = "backend", attempt = 1) {
+  return {
+    seq: ++seq,
+    at,
+    type: "agent.waiting",
+    agent_key: agent,
+    task_id: 1,
+    reason: "rate limited",
+    attempt,
+    max_attempts: 5,
+    retry_in_seconds: 2.5,
+  } as never;
+}
+
+function conflict(writer = "backend", replaced = "database") {
+  return {
+    seq: ++seq,
+    at,
+    type: "workspace.conflict",
+    task_id: 1,
+    path: "schema.sql",
+    writer,
+    replaced_writer: replaced,
+    raced: false,
+  } as never;
+}
+
+describe("waiting", () => {
+  it("records which agent is backing off and how far through", () => {
+    const state = reduceEvent(initialRoomState, waiting("backend", 3));
+    expect(state.waiting.backend?.reason).toBe("rate limited");
+    expect(state.waiting.backend?.attempt).toBe(3);
+    expect(state.waiting.backend?.maxAttempts).toBe(5);
+  });
+
+  it("clears the wait once the agent moves again", () => {
+    // Otherwise the room keeps claiming an agent is backing off long after it
+    // recovered, which is worse than showing nothing.
+    const state = reduceEvents(initialRoomState, [
+      waiting("backend"),
+      agentStatus("backend", "working"),
+    ]);
+    expect(state.waiting.backend).toBeUndefined();
+  });
+
+  it("tracks agents independently", () => {
+    const state = reduceEvents(initialRoomState, [waiting("backend"), waiting("database")]);
+    expect(Object.keys(state.waiting).sort()).toEqual(["backend", "database"]);
+
+    const recovered = reduceEvent(state, agentStatus("backend", "thinking"));
+    expect(recovered.waiting.database).toBeDefined();
+    expect(recovered.waiting.backend).toBeUndefined();
+  });
+});
+
+describe("write conflicts", () => {
+  it("records who replaced whose file", () => {
+    const state = reduceEvent(initialRoomState, conflict("backend", "database"));
+    expect(state.conflicts).toHaveLength(1);
+    expect(state.conflicts[0]?.writer).toBe("backend");
+    expect(state.conflicts[0]?.replacedWriter).toBe("database");
+    expect(state.conflicts[0]?.path).toBe("schema.sql");
+  });
+
+  it("keeps them until dismissed rather than expiring", () => {
+    // Unlike a bubble, this is not something to miss by looking away.
+    const state = reduceEvents(initialRoomState, [
+      conflict(),
+      agentStatus("backend", "working"),
+      message(1),
+      usage(1),
+    ]);
+    expect(state.conflicts).toHaveLength(1);
+  });
+
+  it("stays bounded if something goes badly wrong", () => {
+    const events = Array.from({ length: MAX_CONFLICTS + 10 }, () => conflict());
+    const state = reduceEvents(initialRoomState, events);
+    expect(state.conflicts).toHaveLength(MAX_CONFLICTS);
   });
 });

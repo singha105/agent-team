@@ -18,6 +18,8 @@ import { accessibleName, needsAttention, poseFor } from "./characterStates";
 export interface DeskProps {
   agent: AgentSummary;
   status: AgentStatus | string;
+  /** Set when the agent is backing off before a retry. */
+  waiting?: { reason: string; attempt: number; maxAttempts: number } | null;
   hue: string;
   variant: 0 | 1 | 2 | 3;
   selected: boolean;
@@ -26,7 +28,16 @@ export interface DeskProps {
   deskRef?: (key: string, el: HTMLElement | null) => void;
 }
 
-export function Desk({ agent, status, hue, variant, selected, onSelect, deskRef }: DeskProps) {
+export function Desk({
+  agent,
+  status,
+  waiting,
+  hue,
+  variant,
+  selected,
+  onSelect,
+  deskRef,
+}: DeskProps) {
   const reduced = useReducedMotion() ?? false;
   const pose = poseFor(status);
   const attention = needsAttention(status);
@@ -36,7 +47,12 @@ export function Desk({ agent, status, hue, variant, selected, onSelect, deskRef 
       type="button"
       ref={(el) => deskRef?.(agent.key, el)}
       onClick={() => onSelect(agent.key)}
-      aria-label={accessibleName(agent.display_name, agent.role, status)}
+      aria-label={
+        waiting
+          ? `${agent.display_name}, ${agent.role}. Waiting — ${waiting.reason}, ` +
+            `retry ${waiting.attempt} of ${waiting.maxAttempts}. Open details.`
+          : accessibleName(agent.display_name, agent.role, status)
+      }
       aria-pressed={selected}
       data-agent={agent.key}
       data-status={status}
@@ -72,13 +88,21 @@ export function Desk({ agent, status, hue, variant, selected, onSelect, deskRef 
           {agent.display_name}
         </span>
         <span className="label-micro">{agent.key}</span>
+        {/* A backing-off agent must not read as a frozen one. The status line
+            says what it is waiting for and how far through the retries it is. */}
         <span
           className="mt-1 flex items-center gap-1.5 font-mono text-[10px] tracking-wide"
-          style={{ color: attention ? pose.accent : "var(--color-parchment-faint)" }}
+          style={{
+            color: waiting
+              ? "var(--color-state-waiting)"
+              : attention
+                ? pose.accent
+                : "var(--color-parchment-faint)",
+          }}
         >
           <motion.span
             className="block h-1.5 w-1.5 rounded-full"
-            style={{ background: pose.accent }}
+            style={{ background: waiting ? "var(--color-state-waiting)" : pose.accent }}
             animate={
               reduced || status === "idle"
                 ? { opacity: 1 }
@@ -86,7 +110,7 @@ export function Desk({ agent, status, hue, variant, selected, onSelect, deskRef 
             }
             transition={reduced ? { duration: 0 } : { duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
           />
-          {pose.label}
+          {waiting ? `${waiting.reason} · retry ${waiting.attempt}/${waiting.maxAttempts}` : pose.label}
         </span>
       </div>
     </motion.button>
