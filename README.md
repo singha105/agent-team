@@ -276,3 +276,13 @@ Every setting, with defaults and what it does, is documented in
 | `AGENTTEAM_MAX_AGENT_HOPS` | `10` | Delegation hops per tree. |
 | `AGENTTEAM_TASK_DEADLINE_SECONDS` | `600` | Wall clock per tree. |
 | `AGENTTEAM_WAKE_ON_NOTIFY` | `true` | Whether `send_message` queues work for the recipient. |
+
+## Author
+
+**Arnab Singh** — M.S. Computer Science, University of Dayton (Dec 2026).
+Building toward DevOps, Cloud/AWS and AI Engineering.
+
+[GitHub profile](https://github.com/singha105) ·
+[Portfolio](https://singha105.github.io) ·
+[LinkedIn](https://www.linkedin.com/in/singharnab/) ·
+[arnabsingh001@gmail.com](mailto:arnabsingh001@gmail.com)
