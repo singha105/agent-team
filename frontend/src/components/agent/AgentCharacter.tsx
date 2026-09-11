@@ -82,6 +82,10 @@ function AgentCharacterImpl({ agentKey, status, hue, variant, className }: Agent
     };
   }, [reduced]);
 
+  // Every animated SVG attribute below declares an `initial` matching its
+  // animate target. Framer Motion cannot read a presentation attribute as a
+  // starting value, so without one the first frame animates from `undefined`
+  // and fills the console with warnings.
   const uid = `ch-${agentKey}`;
   const glow = pose.glow;
   const sh = build.shoulder;
@@ -136,6 +140,7 @@ function AgentCharacterImpl({ agentKey, status, hue, variant, className }: Agent
         // Framer Motion emit rx="undefined" on the first frame, which the
         // browser rejects outright.
         style={{ originX: "100px", originY: "172px" }}
+        initial={{ opacity: 0.5 + glow * 0.5, scaleX: 0.92 + glow * 0.18 }}
         animate={{ opacity: 0.5 + glow * 0.5, scaleX: 0.92 + glow * 0.18 }}
         transition={transition}
       />
@@ -201,6 +206,7 @@ function AgentCharacterImpl({ agentKey, status, hue, variant, className }: Agent
                 cy="148"
                 r="6.5"
                 fill="#5a4e3d"
+                initial={{ opacity: 0.65 + glow * 0.35 }}
                 animate={{ opacity: 0.65 + glow * 0.35 }}
                 transition={transition}
               />
@@ -223,6 +229,7 @@ function AgentCharacterImpl({ agentKey, status, hue, variant, className }: Agent
                 rx="20"
                 ry="21"
                 fill={hue}
+                initial={{ opacity: 0.08 + glow * 0.4 }}
                 animate={{ opacity: 0.08 + glow * 0.4 }}
                 transition={transition}
               />
@@ -258,6 +265,7 @@ function AgentCharacterImpl({ agentKey, status, hue, variant, className }: Agent
           stroke={hue}
           strokeWidth="1.8"
           filter={`url(#${uid}-bloom)`}
+          initial={{ strokeOpacity: 0.14 + glow * 0.78 }}
           animate={{ strokeOpacity: 0.14 + glow * 0.78 }}
           transition={transition}
         />
@@ -274,6 +282,7 @@ function AgentCharacterImpl({ agentKey, status, hue, variant, className }: Agent
         ry="74"
         fill={`url(#${uid}-spill)`}
         style={{ mixBlendMode: "screen" }}
+        initial={{ opacity: 0.3 + glow * 0.7 }}
         animate={{ opacity: 0.3 + glow * 0.7 }}
         transition={transition}
       />

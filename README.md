@@ -10,19 +10,9 @@ the answer, without you.
 
 ![The team room](docs/media/team-room.png)
 
-> **Recording the screenshot above**
->
-> ```bash
-> python scripts/demo_server.py --seed        # terminal 1
-> cd frontend && npm run dev                  # terminal 2
-> ```
->
-> Open `http://localhost:5173` and wait a few seconds for the agents to start
-> delegating. Capture at 1440×900 with a bubble mid-flight — that frame carries
-> the whole idea. Save to `docs/media/team-room.png`.
->
-> For a GIF, `⌘⇧5` on macOS records a region; keep it under 8 seconds and around
-> 3 MB, and start recording just before the first bubble leaves a desk.
+*Four agents, four lit desks. Ada is thinking, Ines is running a tool, and a
+message is in flight between them. Status is carried by light before it is
+carried by shape — you can read the room from across the desk.*
 
 ---
 
@@ -104,6 +94,28 @@ flowchart LR
 
 Full detail, with the loop, the buses, the sandbox and the budget system:
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+### Click an agent
+
+![The agent panel](docs/media/agent-panel.png)
+
+Bio, model badge, live status, what they own, the run streaming as it happens,
+task history, and a box to give them work.
+
+### Manage the work
+
+![The task board](docs/media/task-board.png)
+
+Columns match the lifecycle the backend enforces. The only drag offered is
+`needs_review → done`, because approval is the only transition a human can make —
+offering drop targets the API would refuse is worse than not offering them.
+
+### Reconstruct any run
+
+![The trace viewer](docs/media/trace-viewer.png)
+
+Every step in the order it happened, with the raw tool arguments and results,
+delegated children nested, and cost per agent and per model.
 
 ---
 
@@ -221,7 +233,7 @@ agent the UI has never seen gets a coherent desk from a hash of its key.
 
 | | |
 |---|---|
-| 353 backend + 68 frontend tests | green on Python 3.11/3.12/3.13 |
+| 369 backend + 74 frontend tests | green on Python 3.11/3.12/3.13 |
 | Sandbox isolation | checked against a real Docker daemon |
 | The live API path | **verified** — a real call, accepted, parsed |
 | `docker compose up` | brought up and checked healthy from a clean clone |
@@ -237,6 +249,61 @@ python -m app.cli preflight --model claude-haiku-4-5 --effort off   # ~$0.002
 ```
 
 ---
+
+## What a real run costs, and what I learned running one
+
+The first live four-agent run — "Build a URL shortener: API, database, and a
+minimal web UI" — **cost $4.02** and did not finish. It is worth being exact
+about why, because the lesson is in the architecture rather than the bill.
+
+The team did real work: Ada delegated to Ines unprompted, Ines published the
+`links` schema to `PROJECT.md`, and 1,174 lines of working persistence code
+landed in `workspace/`. Then the tree hit its 600-second wall clock before Ada
+could move on to the API, and a delegated task hit the 500,000-token ceiling.
+
+**Every budget limit fired exactly as designed, and it still spent four dollars.**
+That is the interesting part. Input tokens per call grew from 6,000 to 38,000
+because the whole conversation is resent each turn, so cost is *quadratic* in
+iteration count. And a 500,000-token ceiling is about $2.50 on Opus — once per
+task. Token limits are loop protection; they were never cost control, and reading
+them as cost control is an easy and expensive mistake.
+
+So cost is now a first-class ceiling at both levels, defaulting deliberately low.
+Raising it for a long run should be a decision someone makes, not something they
+discover afterwards.
+
+```bash
+AGENTTEAM_MAX_COST_USD_PER_TREE=5.00 python -m app.cli run --agent backend --task "..."
+```
+
+---
+
+## Limitations
+
+Worth knowing before you judge it:
+
+- **A three-part task is too big for one run** at the default ceilings. Scope a
+  task to one agent's lane and it completes comfortably.
+- **Agents cannot install packages.** The sandbox has no network by design, so
+  whatever they need must be baked into `docker/Dockerfile`.
+- **There is no shell in the sandbox** — no pipes, redirects or `&&`. One program
+  at a time. That is a real constraint on what an agent can express.
+- **`send_message` wakes the recipient but the sender never sees a reply.** Use
+  `ask_agent` when the answer matters.
+- **Single process.** The worker pool is asyncio, not a broker, so it scales to a
+  team rather than a fleet.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `docker compose up` fails on a port | Something already uses 8080 or 8000. Set `AGENTTEAM_WEB_PORT` / `AGENTTEAM_API_PORT`. |
+| `run_command` says the executor is missing | Docker is not running, or the sandbox image is unbuilt: `docker build -t agentteam-runtime:latest docker/` |
+| Agents halt with `budget_exceeded` | Expected on a large task. Check `halt_reason` — it names the limit that tripped. |
+| `the API key was rejected` | `.env` has no valid key, or it was revoked. |
+| A task sits in `queued` forever | The worker pool has no lane for that agent — check the key matches a file in `config/teams/<team>/`. |
 
 ## Layout
 
@@ -289,7 +356,15 @@ Every setting, with defaults and what it does, is documented in
 | `AGENTTEAM_SANDBOX_MODE` | `docker` | `subprocess` runs on the host — **not** a security boundary. |
 | `AGENTTEAM_MAX_AGENT_HOPS` | `10` | Delegation hops per tree. |
 | `AGENTTEAM_TASK_DEADLINE_SECONDS` | `600` | Wall clock per tree. |
+| `AGENTTEAM_MAX_COST_USD_PER_TASK` | `0.50` | **The ceiling that bounds spend.** See below. |
+| `AGENTTEAM_MAX_COST_USD_PER_TREE` | `2.00` | Same, across a whole delegation tree. |
 | `AGENTTEAM_WAKE_ON_NOTIFY` | `true` | Whether `send_message` queues work for the recipient. |
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Author
 
