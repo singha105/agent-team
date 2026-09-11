@@ -198,7 +198,23 @@ Tool grants cannot express this. Every agent on a software team needs to write
 files; the grant is all-or-nothing and cannot distinguish the backend agent
 writing `api/books.py` from the same agent writing `db/schema.sql`. So each
 agent declares the paths it owns, a write outside them is refused, and the
-refusal names the teammate to ask. Where a tool grant *is* the right control it
+refusal names the teammate to ask. It is a field on the agent's own YAML:
+
+```yaml
+writes:
+  - 'api/*'
+  - 'api/**'
+  - 'services/**'
+  - 'tests/**'
+hands_off_to:
+  database: "schema, migrations, indexes, query performance"
+```
+
+> `db/schema.sql` is not yours to write. Ines owns schema, migrations, indexes
+> and query performance — use `ask_agent` or `send_message` to reach her.
+
+That refusal goes back to the model as a tool result, so the agent reads it and
+delegates instead of failing. Where a tool grant *is* the right control it
 is used — the research team's writer and researcher have no `run_command`,
 because neither has any business executing code.
 
@@ -356,7 +372,7 @@ Every setting, with defaults and what it does, is documented in
 | `AGENTTEAM_SANDBOX_MODE` | `docker` | `subprocess` runs on the host — **not** a security boundary. |
 | `AGENTTEAM_MAX_AGENT_HOPS` | `10` | Delegation hops per tree. |
 | `AGENTTEAM_TASK_DEADLINE_SECONDS` | `600` | Wall clock per tree. |
-| `AGENTTEAM_MAX_COST_USD_PER_TASK` | `0.50` | **The ceiling that bounds spend.** See below. |
+| `AGENTTEAM_MAX_COST_USD_PER_TASK` | `0.50` | **The ceiling that bounds spend** — see [what a real run costs](#what-a-real-run-costs-and-what-i-learned-running-one). |
 | `AGENTTEAM_MAX_COST_USD_PER_TREE` | `2.00` | Same, across a whole delegation tree. |
 | `AGENTTEAM_WAKE_ON_NOTIFY` | `true` | Whether `send_message` queues work for the recipient. |
 

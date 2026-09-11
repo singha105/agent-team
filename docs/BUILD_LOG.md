@@ -446,3 +446,34 @@ fifth of the cost.
 The second is the more interesting one: the test was green on CI and on my machine for
 the entire project, and only became wrong the moment the thing it was testing became
 possible.
+
+---
+
+## Finishing the README
+
+The last gap was not code. The README showed one screenshot, claimed test counts that
+had drifted (353/68 against an actual 369/74), documented neither the dollar ceilings
+nor the `writes:` lanes, and carried a block of instructions I had written to *myself*
+about how to capture the team room — still sitting there, addressed to nobody, where a
+caption belonged.
+
+Three screenshots were captured against the scripted demo server: the agent panel
+mid-run, the task board with three tasks awaiting review, and the trace viewer with a
+step expanded to raw tool JSON. The first attempt produced an empty board, because the
+capture fired while the scene was still transitioning and because interacting with the
+panel before clicking the board left it unpopulated; a fresh page per shot, each
+waiting on `article` to exist, fixed both.
+
+Capturing them surfaced a real bug. The console filled with Framer Motion warnings
+about animating from `undefined`: Framer Motion cannot read an SVG presentation
+attribute as a starting value, so every animated attribute needs an explicit `initial`
+matching its animate target. Declaring them took the count to zero. Nothing about the
+UI looked wrong, which is why it had survived a whole phase — the screenshots are what
+made me look at the console at all.
+
+The hardest paragraph to write was the honest one about the $4.02 run. The temptation
+in a portfolio README is to report the ceilings as a success and stop there. They *were*
+a success — every one fired exactly as designed — and the run still cost four dollars
+against my $0.70–1.50 estimate, because I had costed it linearly when input tokens grow
+with every turn. A reader learns more from that than from the feature list, so it has
+its own section rather than a footnote.
